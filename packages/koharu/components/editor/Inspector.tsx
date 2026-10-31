@@ -670,11 +670,21 @@ function LayerRow({
   onDelete?: () => void
 }) {
   const { t } = useTranslation()
+  const row = useRef<HTMLDivElement>(null)
   const name = localizedLayerName(layer, index, t)
   const detail = localizedLayerKind(layer, t)
   const Icon = layerIcon(layer)
+
+  useEffect(() => {
+    if (expanded) row.current?.scrollIntoView({ block: 'nearest' })
+  }, [expanded])
+
   return (
-    <div className='group min-w-0 px-1 py-px' style={{ paddingLeft: `${depth * 10 + 4}px` }}>
+    <div
+      ref={row}
+      className='group min-w-0 px-1 py-px'
+      style={{ paddingLeft: `${depth * 10 + 4}px` }}
+    >
       <div
         data-selected={selected}
         data-expanded={expanded}

@@ -1,4 +1,11 @@
-import type { EntityId, Frame, Layer, Point, TransformFrame } from '@koharu/bridge/protocol'
+import type {
+  AnalysisRegion,
+  EntityId,
+  Frame,
+  Layer,
+  Point,
+  TransformFrame,
+} from '@koharu/bridge/protocol'
 
 import { effectiveLayerVisibility, isTextLayer } from './document'
 
@@ -147,15 +154,46 @@ export function hitTestLayers(
   layers: Layer[],
   point: Point,
   frames: Readonly<Record<EntityId, Frame>>,
+  regions: AnalysisRegion[],
 ): Layer | null {
-  for (let index = layers.length - 1; index >= 0; index -= 1) {
-    const layer = layers[index]
-    const visibility = effectiveLayerVisibility(layers, layer)
-    if (!selectableLayer(layer) || !visibility.visible || visibility.opacity <= 0) continue
-    const frame = controlFrame(layer, frames)
-    if (frame && frameContains(frame, point)) return layer
+  const candidates = layers
+    .filter((layer) => {
+      const visibility = effectiveLayerVisibility(layers, layer)
+      return selectableLayer(layer) && visibility.visible && visibility.opacity > 0
+    })
+    .reverse()
+  const regionContains = (id: EntityId | null) => {
+    const region = id ? regions.find((candidate) => candidate.id === id) : undefined
+    return region !== undefined && polygonContains(region.geometry.points, point)
   }
-  return null
+  // A rendered frame or detected text area wins; the fitted bubble is the fallback, so text
+  // without a laid-out translation stays selectable without hiding a neighbor in that bubble.
+  return (
+    candidates.find((layer) => {
+      const frame = controlFrame(layer, frames)
+      return (
+        (frame !== null && frameContains(frame, point)) ||
+        (isTextLayer(layer) && regionContains(layer.content.source_region))
+      )
+    }) ??
+    candidates.find((layer) => isTextLayer(layer) && regionContains(layer.automatic_region)) ??
+    null
+  )
+}
+
+export function polygonContains(points: Point[], point: Point): boolean {
+  let inside = false
+  for (let index = 0, previous = points.length - 1; index < points.length; previous = index++) {
+    const start = points[previous]
+    const end = points[index]
+    if (
+      start.y > point.y !== end.y > point.y &&
+      point.x < ((end.x - start.x) * (point.y - start.y)) / (end.y - start.y) + start.x
+    ) {
+      inside = !inside
+    }
+  }
+  return inside
 }
 
 export function frameContains(frame: Frame, point: Point): boolean {

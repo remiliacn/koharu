@@ -70,7 +70,7 @@ pub(super) async fn translate(
         output_config: OutputConfig {
             format: JsonOutputFormat {
                 kind: "json_schema",
-                schema: prompt::output_schema(request.segments.len()),
+                schema: output_schema(request.segments.len()),
             },
         },
     };
@@ -89,6 +89,30 @@ pub(super) async fn translate(
         .find_map(|block| (block.kind == "text").then_some(block.text).flatten())
         .context("Claude returned no text content")?;
     Ok(prompt::translations("claude", &text, &request.segments)?)
+}
+
+// Claude structured outputs reject array length and numeric bounds
+// (https://platform.claude.com/docs/en/build-with-claude/structured-outputs), so the
+// segment count and ID range are left to the prompt and the response parser.
+fn output_schema(expected: usize) -> serde_json::Value {
+    let mut schema = prompt::output_schema(expected);
+    for (pointer, keys) in [
+        ("/properties/translations", ["minItems", "maxItems"]),
+        (
+            "/properties/translations/items/properties/id",
+            ["minimum", "maximum"],
+        ),
+    ] {
+        if let Some(object) = schema
+            .pointer_mut(pointer)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for key in keys {
+                object.remove(key);
+            }
+        }
+    }
+    schema
 }
 
 #[derive(Serialize)]
@@ -234,7 +258,7 @@ mod tests {
             output_config: OutputConfig {
                 format: JsonOutputFormat {
                     kind: "json_schema",
-                    schema: prompt::output_schema(2),
+                    schema: output_schema(6),
                 },
             },
         };
@@ -242,10 +266,14 @@ mod tests {
 
         assert_eq!(value["thinking"]["type"], "adaptive");
         assert_eq!(value["output_config"]["format"]["type"], "json_schema");
-        assert_eq!(
-            value["output_config"]["format"]["schema"]["properties"]["translations"]["maxItems"],
-            2
-        );
+        let translations =
+            &value["output_config"]["format"]["schema"]["properties"]["translations"];
+        assert!(translations.get("minItems").is_none());
+        assert!(translations.get("maxItems").is_none());
+        let id = &translations["items"]["properties"]["id"];
+        assert!(id.get("minimum").is_none() && id.get("maximum").is_none());
+        assert_eq!(id["type"], "integer");
+        assert_eq!(translations["items"]["additionalProperties"], false);
     }
 
     #[test]

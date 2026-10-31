@@ -1,7 +1,7 @@
 use std::{collections::HashSet, io::Cursor, path::PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use image::{DynamicImage, ImageFormat, RgbaImage};
+use image::{DynamicImage, GrayImage, ImageFormat, Luma, Rgba, RgbaImage};
 use koharu_desktop::Frame;
 use koharu_scene::{
     AssetInput, AssetMetadata, AssetRole, At, Authored, Commit, EntityId, EntityOrigin,
@@ -11,7 +11,7 @@ use koharu_scene::{
     TextGroup as SceneTextGroup, TextLayout as SceneTextLayout, TextLayoutKind,
     Translation as SceneTranslation, Typography as SceneTypography, Visibility as SceneVisibility,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use tokio::sync::Mutex;
 
@@ -20,7 +20,11 @@ use super::{
     editing::{GeometryUpdate, TypographyUpdate},
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+// The page asset automatic inpainting reads; detection writes it and mask strokes edit it.
+const INPAINT_MASK_ROLE: &str = "text-mask";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Type)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum RasterStrokeMode {
     Paint,
     Erase,
@@ -425,13 +429,6 @@ impl Project {
         let mut layer = None;
         let patch = snapshot.patch(|edit| {
             let content = edit.add_text_content(page, At::End)?;
-            edit.set(
-                content,
-                &SceneSourceText {
-                    text: Authored::user(String::new()),
-                    language: None,
-                },
-            )?;
             let added_layer = edit.add_text_layer(
                 page,
                 At::End,
@@ -506,17 +503,31 @@ impl Project {
         let language = snapshot
             .component::<SceneTranslation>(content)?
             .and_then(|translation| translation.language);
+        let has_source = snapshot.component::<SceneSourceText>(content)?.is_some();
         let patch = snapshot.patch(|edit| {
             edit.promote_entity_to_user(layer)?;
             edit.promote_entity_to_user(content)?;
             match text {
-                Some(text) => edit.set(
-                    content,
-                    &SceneTranslation {
-                        text: Authored::user(text),
-                        language,
-                    },
-                ),
+                Some(text) => {
+                    // A translation requires source text. Typing into a drawn box claims an
+                    // empty one only now, so OCR can still fill boxes nobody has typed into.
+                    if !has_source {
+                        edit.set(
+                            content,
+                            &SceneSourceText {
+                                text: Authored::user(String::new()),
+                                language: None,
+                            },
+                        )?;
+                    }
+                    edit.set(
+                        content,
+                        &SceneTranslation {
+                            text: Authored::user(text),
+                            language,
+                        },
+                    )
+                }
                 None => edit.remove::<SceneTranslation>(content),
             }
         })?;
@@ -747,15 +758,7 @@ impl Project {
         diameter: f32,
         points: Vec<ScenePoint>,
     ) -> Result<(Commit, EntityId)> {
-        if !diameter.is_finite() || diameter <= 0.0 || points.is_empty() {
-            bail!("a raster stroke requires a positive diameter and at least one point");
-        }
-        if points
-            .iter()
-            .any(|point| !point.x.is_finite() || !point.y.is_finite())
-        {
-            bail!("raster stroke points must be finite");
-        }
+        validate_stroke(diameter, &points)?;
         let snapshot = self.snapshot();
         let page_value = snapshot.page(page)?.page()?;
         let width = page_value.width.round() as u32;
@@ -858,6 +861,65 @@ impl Project {
             self.commit(patch).await?,
             committed_layer.expect("raster layer was selected or added while building the patch"),
         ))
+    }
+
+    pub(crate) async fn inpaint_mask(&self, page: EntityId) -> Result<Option<Vec<u8>>> {
+        let snapshot = self.snapshot();
+        let Some(asset) = snapshot.asset(page, &AssetRole::new(INPAINT_MASK_ROLE)?)? else {
+            return Ok(None);
+        };
+        Ok(Some(snapshot.read_blob(asset.blob).await?.to_vec()))
+    }
+
+    pub(crate) async fn apply_mask_stroke(
+        &mut self,
+        page: EntityId,
+        mode: RasterStrokeMode,
+        diameter: f32,
+        points: Vec<ScenePoint>,
+    ) -> Result<Commit> {
+        validate_stroke(diameter, &points)?;
+        let snapshot = self.snapshot();
+        let page_value = snapshot.page(page)?.page()?;
+        let width = page_value.width.round() as u32;
+        let height = page_value.height.round() as u32;
+        if width == 0 || height == 0 {
+            bail!("page dimensions must be positive");
+        }
+        let role = AssetRole::new(INPAINT_MASK_ROLE)?;
+        let mask = match snapshot.asset(page, &role)? {
+            Some(asset) => {
+                image::load_from_memory(&snapshot.read_blob(asset.blob).await?)?.to_luma8()
+            }
+            None => GrayImage::new(width, height),
+        };
+        if mask.dimensions() != (width, height) {
+            bail!("the inpaint mask dimensions must match the page");
+        }
+        // Coverage lives in alpha so mask edits share the paint brush's stroke rasterization.
+        let mut coverage = RgbaImage::from_fn(width, height, |x, y| {
+            Rgba([u8::MAX, u8::MAX, u8::MAX, mask.get_pixel(x, y)[0]])
+        });
+        rasterize_stroke(&mut coverage, mode, [u8::MAX; 4], diameter, &points);
+        let mask = GrayImage::from_fn(width, height, |x, y| Luma([coverage.get_pixel(x, y)[3]]));
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageLuma8(mask).write_to(&mut bytes, ImageFormat::Png)?;
+        let patch = snapshot.patch(|edit| {
+            edit.set_asset(
+                page,
+                &role,
+                AssetInput::new(
+                    bytes.into_inner(),
+                    "image/png",
+                    AssetMetadata {
+                        width: Some(width),
+                        height: Some(height),
+                        attributes: Default::default(),
+                    },
+                ),
+            )
+        })?;
+        self.commit(patch).await
     }
 
     pub(crate) async fn undo(&mut self) -> Result<Commit> {
@@ -1263,6 +1325,19 @@ fn validate_project_name(name: &str) -> Result<String> {
     Ok(name.to_owned())
 }
 
+fn validate_stroke(diameter: f32, points: &[ScenePoint]) -> Result<()> {
+    if !diameter.is_finite() || diameter <= 0.0 || points.is_empty() {
+        bail!("a raster stroke requires a positive diameter and at least one point");
+    }
+    if points
+        .iter()
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        bail!("raster stroke points must be finite");
+    }
+    Ok(())
+}
+
 fn rasterize_stroke(
     image: &mut RgbaImage,
     mode: RasterStrokeMode,
@@ -1481,5 +1556,91 @@ mod tests {
             &[ScenePoint { x: 2.0, y: 2.0 }],
         );
         assert_eq!(white.get_pixel(2, 2).0, [255, 255, 255, 255]);
+    }
+
+    #[tokio::test]
+    async fn drawn_boxes_claim_source_text_only_when_a_translation_is_typed() {
+        let mut session = Session::memory().await.unwrap();
+        let mut setup = session.snapshot().edit();
+        let page = setup
+            .add_page(PageDraft::new("page", 100.0, 100.0), At::End)
+            .unwrap();
+        session.commit(setup.finish().unwrap()).await.unwrap();
+        let mut project = Project::new(session, "test".to_owned());
+
+        let (_, layer) = project
+            .add_text_box(
+                page,
+                Frame {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 40.0,
+                    height: 20.0,
+                    angle_degrees: 0.0,
+                },
+            )
+            .await
+            .unwrap();
+        let content = Project::text_content(&project.snapshot(), layer).unwrap();
+        assert!(
+            project
+                .snapshot()
+                .component::<SceneSourceText>(content)
+                .unwrap()
+                .is_none()
+        );
+
+        project
+            .set_translation(layer, Some("Hello".to_owned()))
+            .await
+            .unwrap();
+        let source = project
+            .snapshot()
+            .component::<SceneSourceText>(content)
+            .unwrap()
+            .unwrap();
+        assert!(source.text.value.is_empty());
+        assert!(matches!(source.text.origin, Origin::User));
+    }
+
+    #[tokio::test]
+    async fn mask_strokes_edit_the_inpaint_mask_as_undoable_commits() {
+        let mut session = Session::memory().await.unwrap();
+        let mut setup = session.snapshot().edit();
+        let page = setup
+            .add_page(PageDraft::new("page", 32.0, 16.0), At::End)
+            .unwrap();
+        session.commit(setup.finish().unwrap()).await.unwrap();
+        let mut project = Project::new(session, "test".to_owned());
+        let mask =
+            |bytes: Option<Vec<u8>>| image::load_from_memory(&bytes.unwrap()).unwrap().to_luma8();
+
+        let line = vec![
+            ScenePoint { x: 4.0, y: 8.0 },
+            ScenePoint { x: 28.0, y: 8.0 },
+        ];
+        let painted = project
+            .apply_mask_stroke(page, RasterStrokeMode::Paint, 5.0, line)
+            .await
+            .unwrap();
+        project.record_commit(&painted);
+        let erased = project
+            .apply_mask_stroke(
+                page,
+                RasterStrokeMode::Erase,
+                5.0,
+                vec![ScenePoint { x: 16.0, y: 8.0 }],
+            )
+            .await
+            .unwrap();
+        project.record_commit(&erased);
+
+        let current = mask(project.inpaint_mask(page).await.unwrap());
+        assert_eq!(current.get_pixel(16, 8)[0], 0);
+        assert_eq!(current.get_pixel(6, 8)[0], 255);
+
+        project.undo().await.unwrap();
+        let restored = mask(project.inpaint_mask(page).await.unwrap());
+        assert_eq!(restored.get_pixel(16, 8)[0], 255);
     }
 }

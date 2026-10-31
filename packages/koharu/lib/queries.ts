@@ -18,6 +18,7 @@ export const pagesKey = ['pages'] as const
 export const pageKey = ['page'] as const
 export const preparedPageKey = (page: string) => ['prepared-page', page] as const
 export const fontsKey = ['fonts'] as const
+export const inpaintMaskKey = ['inpaint-mask'] as const
 
 const projectQuery = queryOptions({
   queryKey: projectKey,
@@ -79,6 +80,16 @@ export function useFontPreview(font: FontFamily | undefined, enabled = true) {
     },
     enabled: enabled && font !== undefined,
     gcTime: 5 * 60 * 1000,
+  })
+}
+
+export function useInpaintMask(page: string, revision: number | null) {
+  return useQuery({
+    queryKey: [...inpaintMaskKey, page, revision],
+    queryFn: async () => new Uint8Array(await call(commands.getInpaintMask, page)),
+    enabled: revision !== null,
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === page ? previous : undefined,
   })
 }
 

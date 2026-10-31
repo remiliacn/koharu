@@ -8,6 +8,7 @@ import {
   MousePointer2,
   Pipette,
   Plus,
+  ScanEye,
   Sparkles,
   Type,
 } from 'lucide-react'
@@ -64,7 +65,12 @@ export function ToolBar() {
       <div className='flex flex-col items-center py-0.5'>
         {tools.map(([tool, Icon], index) => (
           <div key={tool} className='contents'>
-            {index === tools.length - 1 && <span className='my-1 h-px w-5 bg-border' />}
+            {index === tools.length - 1 && (
+              <>
+                <InpaintMaskToggle disabled={!page} />
+                <span className='my-1 h-px w-5 bg-border' />
+              </>
+            )}
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -103,6 +109,35 @@ export function ToolBar() {
         </div>
       )}
     </aside>
+  )
+}
+
+function InpaintMaskToggle({ disabled }: { disabled: boolean }) {
+  const { t } = useTranslation()
+  const visible = useKoharuStore((state) => state.inpaintMaskVisible)
+  const setVisible = useKoharuStore((state) => state.setInpaintMaskVisible)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            disabled={disabled}
+            aria-label={t('menu.inpaintMask')}
+            aria-pressed={visible}
+            data-active={visible}
+            className='relative text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-30 data-[active=true]:bg-accent data-[active=true]:text-accent-foreground'
+            onClick={() => setVisible(!visible)}
+          />
+        }
+      >
+        <ScanEye className='size-4' />
+      </TooltipTrigger>
+      <TooltipContent side='right'>{t('menu.inpaintMask')}</TooltipContent>
+    </Tooltip>
   )
 }
 

@@ -19,7 +19,6 @@ pub use self::{
 use self::{model::Model, processor::Processor};
 
 pub(super) const MAX_NEW_TOKENS: usize = 512;
-pub(super) const REPETITION_PENALTY: f32 = 1.2;
 
 crate::model_repository!("PaddlePaddle/PaddleOCR-VL-1.6" @ "66317acc4c9fc17bd154591ce650735cd2855f3e" {
     CONFIG = "config.json",

@@ -253,6 +253,7 @@
     "github": "GitHub",
     "help": "Ayuda",
     "import": "Importar páginas",
+    "inpaintMask": "Mostrar máscara de relleno",
     "process": "Procesar",
     "processLayers": "Procesar capas seleccionadas",
     "processPages": "Procesar páginas seleccionadas",

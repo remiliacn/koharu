@@ -111,7 +111,12 @@ function installProject() {
   })
   queryClient.setQueryData(pagesKey, [])
   queryClient.setQueryData(pageKey, page)
-  useKoharuStore.setState({ selectedLayers: [], tool: 'select' })
+  useKoharuStore.setState({
+    selectedLayers: [],
+    tool: 'select',
+    brush: { diameter: 48, color: '#FFFFFF' },
+    inpaintMaskVisible: false,
+  })
   useKoharuStore.setState({
     canvasPage: 'page',
     canvasRevision: 1,
@@ -430,6 +435,75 @@ describe('canvas interaction adapter', () => {
     )
   })
 
+  it('selects untranslated text through its fitted region', () => {
+    installProject()
+    queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
+      ...page,
+      layers: [
+        {
+          type: 'text',
+          id: 'element',
+          parent: 'page',
+          geometry: null,
+          angle_degrees: null,
+          visibility: { visible: true, opacity: 1 },
+          content: {
+            id: 'content',
+            source: null,
+            translation: null,
+            role: null,
+            source_region: null,
+          },
+          typography: null,
+          layout: 'paragraph',
+          automatic_region: 'bubble',
+        },
+      ],
+      regions: [
+        {
+          id: 'bubble',
+          parent: 'page',
+          geometry: {
+            points: [
+              { x: 20, y: 30 },
+              { x: 100, y: 30 },
+              { x: 100, y: 90 },
+              { x: 20, y: 90 },
+            ],
+          },
+          kind: 'bubble',
+          label: null,
+        },
+      ],
+    }))
+    const surface = renderWorkspace()
+
+    fireEvent.pointerDown(surface, { button: 0, pointerId: 15, clientX: 50, clientY: 60 })
+    fireEvent.pointerUp(surface, { pointerId: 15, clientX: 50, clientY: 60 })
+
+    expect(useKoharuStore.getState().selectedLayers).toEqual(['element'])
+  })
+
+  it('erases the shown inpaint mask instead of a raster layer', async () => {
+    installProject()
+    useKoharuStore.setState({
+      tool: 'eraser',
+      inpaintMaskVisible: true,
+      brush: { diameter: 24, color: '#FFFFFF' },
+    })
+    canvas.beginStroke.mockClear()
+    vi.spyOn(commands, 'getInpaintMask').mockResolvedValue([])
+    const commit = vi.spyOn(commands, 'commitMaskStroke').mockResolvedValue(2)
+    const surface = renderWorkspace()
+
+    fireEvent.pointerDown(surface, { button: 0, pointerId: 16, clientX: 30, clientY: 40 })
+    fireEvent.pointerUp(surface, { pointerId: 16, clientX: 30, clientY: 40 })
+
+    await waitFor(() => expect(commit).toHaveBeenCalledOnce())
+    expect(commit).toHaveBeenCalledWith(1, 'erase', expect.arrayContaining([{ x: 20, y: 20 }]), 24)
+    expect(canvas.beginStroke).not.toHaveBeenCalled()
+  })
+
   it('targets the selected raster layer with the eraser', async () => {
     installProject()
     queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
@@ -453,6 +527,28 @@ describe('canvas interaction adapter', () => {
       diameter: 48,
     })
     expect(commit).toHaveBeenCalledWith(1, 'paint', expect.arrayContaining([{ x: 20, y: 20 }]), 48)
+  })
+
+  it('erases the cleanup layer when no raster layer is selected', async () => {
+    installProject()
+    queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
+      ...page,
+      layers: [...page.layers, { ...paintLayer, id: 'cleanup', name: 'Cleanup', kind: 'cleanup' }],
+    }))
+    useKoharuStore.setState({ tool: 'eraser' })
+    const commit = vi
+      .spyOn(commands, 'commitErase')
+      .mockResolvedValue({ revision: 2, layer: 'cleanup' })
+    const surface = renderWorkspace()
+
+    fireEvent.pointerDown(surface, { button: 0, pointerId: 17, clientX: 30, clientY: 40 })
+    fireEvent.pointerUp(surface, { pointerId: 17, clientX: 30, clientY: 40 })
+
+    await waitFor(() => expect(commit).toHaveBeenCalledOnce())
+    expect(canvas.beginStroke).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'erase', layer: 'cleanup' }),
+    )
+    expect(commit).toHaveBeenCalledWith(1, 'cleanup', expect.anything(), 48)
   })
 
   it('maps the Remove tool to an inpainting mask gesture', async () => {

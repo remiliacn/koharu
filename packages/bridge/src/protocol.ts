@@ -76,6 +76,8 @@ export const commands = {
 	commitErase: (expectedRevision: Revision, layer: EntityId, points: Point[], diameter: number) => __TAURI_INVOKE<LayerCommit>("commit_erase", { expectedRevision, layer, points: points.map(i=>i), diameter }),
 	commitTransform: (expectedRevision: Revision, elements: TransformFrame[]) => __TAURI_INVOKE<number | null>("commit_transform", { expectedRevision, elements }).then((v) => (v==null?v:v as typeof v)),
 	commitInpaint: (expectedRevision: Revision, points: Point[], diameter: number) => __TAURI_INVOKE<string | null>("commit_inpaint", { expectedRevision, points: points.map(i=>i), diameter }),
+	getInpaintMask: (page: EntityId) => __TAURI_INVOKE<CanvasBytes>("get_inpaint_mask", { page }),
+	commitMaskStroke: (expectedRevision: Revision, mode: RasterStrokeMode, points: Point[], diameter: number) => __TAURI_INVOKE<Revision>("commit_mask_stroke", { expectedRevision, mode, points: points.map(i=>i), diameter }),
 };
 
 /* Types */
@@ -336,7 +338,7 @@ export type ModelSelection = {
 	reasoning?: boolean,
 };
 
-export type OcrModel = { model: "paddleocr-vl-1.6" } | { model: "manga-ocr" } | { model: "baberu-ocr" } | { model: "hayai-ocr" };
+export type OcrModel = { model: "paddleocr-vl-1.6" } | { model: "paddleocr-vl-manga" } | { model: "manga-ocr" } | { model: "baberu-ocr" } | { model: "hayai-ocr" };
 
 export type OpenAiCompatibleConfig = {
 	base_url?: string | null,
@@ -444,6 +446,8 @@ export type Quantization = {
 };
 
 export type RasterLayerKind = "cleanup" | "paint";
+
+export type RasterStrokeMode = "paint" | "erase";
 
 export type Reasoning = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 

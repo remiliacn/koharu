@@ -25,6 +25,7 @@ import { useKoharuStore } from '@/lib/store'
 import { commands, type Operation, type Scope, type Stage } from '@koharu/bridge/protocol'
 import {
   Menubar,
+  MenubarCheckboxItem,
   MenubarContent as UiMenubarContent,
   MenubarItem as UiMenubarItem,
   MenubarMenu,
@@ -51,6 +52,8 @@ export function TitleBar() {
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
   const requestCanvasFit = useKoharuStore((state) => state.requestCanvasFit)
+  const inpaintMaskVisible = useKoharuStore((state) => state.inpaintMaskVisible)
+  const setInpaintMaskVisible = useKoharuStore((state) => state.setInpaintMaskVisible)
   const { importPages, importing } = useImportPages()
   const { run: exportProject, busy: exporting } = useCommand(
     ['export-project'],
@@ -238,6 +241,14 @@ export function TitleBar() {
               <MenubarItem disabled={!page} onClick={requestCanvasFit}>
                 {t('menu.fit')}
               </MenubarItem>
+              <MenubarCheckboxItem
+                className='min-h-8 text-xs'
+                disabled={!page}
+                checked={inpaintMaskVisible}
+                onCheckedChange={setInpaintMaskVisible}
+              >
+                {t('menu.inpaintMask')}
+              </MenubarCheckboxItem>
             </MenubarContent>
           </MenubarMenu>
 

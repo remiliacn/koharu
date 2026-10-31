@@ -139,6 +139,59 @@ pub(crate) async fn get_canvas_page_resource(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn get_inpaint_mask(
+    page: EntityId,
+    project: State<'_, CurrentProject>,
+) -> Result<CanvasBytes, Error> {
+    let project = project.project.lock().await;
+    let project = project.as_ref().context("no project is open")?;
+    Ok(CanvasBytes(
+        project.inpaint_mask(page).await?.unwrap_or_default(),
+    ))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn commit_mask_stroke(
+    expected_revision: Revision,
+    mode: RasterStrokeMode,
+    points: Vec<Point>,
+    diameter: f32,
+    desktop: State<'_, Desktop>,
+    project: State<'_, CurrentProject>,
+    canvas_channel: State<'_, CanvasChannel>,
+) -> Result<Revision, Error> {
+    let (commit, page) = {
+        let mut project = project.project.lock().await;
+        let project = project.as_mut().context("no project is open")?;
+        ensure_revision(project.snapshot().revision(), expected_revision)?;
+        let page = project
+            .active_page()
+            .context("the project has no active page")?;
+        let commit = project
+            .apply_mask_stroke(
+                page,
+                mode,
+                diameter,
+                points
+                    .into_iter()
+                    .map(|point| koharu_scene::Point {
+                        x: point.x,
+                        y: point.y,
+                    })
+                    .collect(),
+            )
+            .await?;
+        project.record_commit(&commit);
+        (commit, project.active_page())
+    };
+    desktop.synchronize(&commit.snapshot, page, &commit).await?;
+    canvas_channel.channel.publish(desktop.canvas_state());
+    Ok(commit.revision)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn add_point_text(
     point: Point,
     desktop: State<'_, Desktop>,

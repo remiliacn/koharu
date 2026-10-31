@@ -57,6 +57,7 @@ interface KoharuStore {
   selectedPages: EntityId[]
   tool: CanvasTool
   brush: CanvasBrush
+  inpaintMaskVisible: boolean
   inspector: InspectorSection
   processingScope: PipelineScope
   processingStages: Stage[]
@@ -70,6 +71,7 @@ interface KoharuStore {
   selectLayers: (layers: EntityId[]) => void
   setTool: (tool: CanvasTool) => void
   setBrush: (brush: CanvasBrush) => void
+  setInpaintMaskVisible: (visible: boolean) => void
   setShortcut: (action: ShortcutAction, key: string) => void
   requestCanvasFit: () => void
   dismissJob: (id: string) => void
@@ -105,6 +107,7 @@ export const useKoharuStore = create<KoharuStore>()((set) => ({
   selectedPages: [],
   tool: 'select',
   brush: { diameter: 48, color: '#FFFFFF' },
+  inpaintMaskVisible: false,
   inspector: 'copy',
   processingScope: 'selected-pages',
   processingStages: [...pipelineStages],
@@ -118,6 +121,7 @@ export const useKoharuStore = create<KoharuStore>()((set) => ({
   selectLayers: (selectedLayers) => set({ selectedLayers: [...new Set(selectedLayers)] }),
   setTool: (tool) => set({ tool }),
   setBrush: (brush) => set({ brush }),
+  setInpaintMaskVisible: (inpaintMaskVisible) => set({ inpaintMaskVisible }),
   setShortcut: (action, key) =>
     set((state) => ({
       shortcuts: { ...state.shortcuts, [action]: key.toLowerCase().slice(0, 1) },

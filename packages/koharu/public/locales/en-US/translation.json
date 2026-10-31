@@ -253,6 +253,7 @@
     "github": "GitHub",
     "help": "Help",
     "import": "Import Pages",
+    "inpaintMask": "Show Inpainting Mask",
     "process": "Process",
     "processLayers": "Process Selected Layers",
     "processPages": "Process Selected Pages",

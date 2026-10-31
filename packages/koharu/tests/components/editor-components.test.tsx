@@ -1012,8 +1012,8 @@ describe('greenfield editor', () => {
     fireEvent.click(screen.getByRole('button', { name: /Scope Selection/ }))
     fireEvent.click(screen.getByRole('button', { name: /Entire project/ }))
     fireEvent.click(screen.getByRole('button', { name: /Stages 4 stages/ }))
-    fireEvent.click(screen.getByRole('button', { name: /Translation/ }))
-    fireEvent.click(screen.getByRole('button', { name: /Inpainting/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Translation/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Inpainting/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Run processing' }))
     await waitFor(() =>
       expect(run).toHaveBeenLastCalledWith(
@@ -1026,13 +1026,27 @@ describe('greenfield editor', () => {
     fireEvent.click(screen.getByRole('button', { name: /Scope Project/ }))
     fireEvent.click(screen.getByRole('button', { name: /Selected pages/ }))
     fireEvent.click(screen.getByRole('button', { name: /Stages 2 stages/ }))
-    fireEvent.click(screen.getByRole('button', { name: /Translation/ }))
-    fireEvent.click(screen.getByRole('button', { name: /Inpainting/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Translation/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Inpainting/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Run processing' }))
     await waitFor(() =>
       expect(run).toHaveBeenLastCalledWith(
         { scope: 'pages', value: ['page'] },
         { operation: 'full' },
+      ),
+    )
+  })
+
+  it('runs one pipeline stage from its command bar button', async () => {
+    installProject()
+    const run = vi.spyOn(commands, 'process').mockResolvedValue('job')
+    render(<CanvasCommandBar />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run OCR' }))
+    await waitFor(() =>
+      expect(run).toHaveBeenLastCalledWith(
+        { scope: 'pages', value: ['page'] },
+        { operation: 'only', stage: 'ocr' },
       ),
     )
   })
@@ -1142,8 +1156,8 @@ describe('greenfield editor', () => {
     await user.click(screen.getByRole('button', { name: /Scope Selection/ }))
     await user.click(screen.getByRole('button', { name: /Entire project/ }))
     await user.click(screen.getByRole('button', { name: /Stages 4 stages/ }))
-    await user.click(screen.getByRole('button', { name: /Translation/ }))
-    await user.click(screen.getByRole('button', { name: /Inpainting/ }))
+    await user.click(screen.getByRole('button', { name: /^Translation/ }))
+    await user.click(screen.getByRole('button', { name: /^Inpainting/ }))
     await user.click(screen.getByRole('button', { name: 'Back' }))
     await user.click(screen.getByRole('button', { name: /Output English/ }))
     await user.click(screen.getByRole('combobox', { name: 'Target language' }))

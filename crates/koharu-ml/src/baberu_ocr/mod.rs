@@ -16,7 +16,7 @@ use self::{
     processor::{BaberuImageProcessor, Tokenizer},
 };
 
-crate::model_repository!("genshiai-daichi/baberu-ocr" @ "d9cc13153e9a1cd8fdfa3b7b1cc329da2020aeae" {
+crate::model_repository!("genshiai-daichi/baberu-ocr" @ "a0e3d4b1f98a8c5d0aba66ded831fe7b52bbf2fa" {
     CONFIG = "config.json",
     GENERATION_CONFIG = "generation_config.json",
     WEIGHTS = "model.safetensors",

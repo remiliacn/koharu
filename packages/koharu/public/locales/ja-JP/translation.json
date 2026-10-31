@@ -253,6 +253,7 @@
     "github": "GitHub",
     "help": "ヘルプ",
     "import": "ページを読み込む",
+    "inpaintMask": "インペイントマスクを表示",
     "process": "処理",
     "processLayers": "選択したレイヤーを処理",
     "processPages": "選択ページを処理",

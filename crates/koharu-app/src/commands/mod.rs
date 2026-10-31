@@ -106,6 +106,8 @@ pub fn bindings() -> tauri_specta::Builder<tauri_runtime_cef::CefRuntime> {
             canvas::commit_erase,
             canvas::commit_transform,
             canvas::commit_inpaint,
+            canvas::get_inpaint_mask,
+            canvas::commit_mask_stroke,
         ])
         .disable_serde_phases()
         .error_handling(ErrorHandlingMode::Throw)

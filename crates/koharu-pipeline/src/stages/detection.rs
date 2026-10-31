@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use super::{StageInput, StageProcessor, finish, generation};
-use crate::{DetectionModel, ModelCell};
+use crate::{DetectionModel, ModelCell, scope::geometry_extents};
 
 const MODEL_ID: &str = "mayocream/koharu-layout-rfdetr-seg-2xl-1152";
 const MODEL_NAME: &str = "koharu-layout-rfdetr-seg-2xl";
@@ -100,17 +100,7 @@ impl StageProcessor for Processor {
     }
 
     fn skip(&self, input: &StageInput) -> Result<bool> {
-        for entity in input.scene.descendants(input.page)? {
-            let id = entity.id();
-            if input.contains_entity(id)?
-                && entity
-                    .component::<Region>()?
-                    .is_some_and(|region| region.kind == TextRegion::kind())
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(has_text_regions(input)? && drawn_boxes(input)?.is_empty())
     }
 
     fn unload(&self) -> bool {
@@ -160,8 +150,59 @@ impl Model {
             .get(&input.scene, page, "source")
             .await?
             .ok_or_else(|| anyhow!("page {page} has no source image"))?;
-        let output = self.detect(image.clone()).await?;
-        build_patch(&input, &image, output, &generation(PRODUCER, MODEL_ID)?).await
+        let output = if has_text_regions(&input)? {
+            None
+        } else {
+            Some(self.detect(image.clone()).await?)
+        };
+        let mut boxes = Vec::new();
+        for drawn in drawn_boxes(&input)? {
+            let detections = self.detect_in_box(&image, &drawn).await?;
+            boxes.push((drawn, detections));
+        }
+        build_patch(
+            &input,
+            &image,
+            output,
+            &boxes,
+            &generation(PRODUCER, MODEL_ID)?,
+        )
+        .await
+    }
+
+    // Detecting on the box's surroundings alone focuses the model on lettering the
+    // page-wide pass missed. The model stretches its input to a square, so the crop is
+    // letterboxed: a stretched wide crop distorts lettering until nothing is found.
+    async fn detect_in_box(
+        &self,
+        image: &Arc<DynamicImage>,
+        drawn: &DrawnBox,
+    ) -> Result<Vec<KoharuLayoutDetection>> {
+        let [left, top, right, bottom] = box_crop(drawn.bounds, image.width(), image.height());
+        if right <= left || bottom <= top {
+            return Ok(Vec::new());
+        }
+        let crop = image.crop_imm(left, top, right - left, bottom - top);
+        let side = crop.width().max(crop.height());
+        let (pad_x, pad_y) = ((side - crop.width()) / 2, (side - crop.height()) / 2);
+        let mut canvas = RgbImage::from_pixel(side, side, image::Rgb([u8::MAX; 3]));
+        image::imageops::overlay(
+            &mut canvas,
+            &crop.to_rgb8(),
+            i64::from(pad_x),
+            i64::from(pad_y),
+        );
+        let origin = (
+            i64::from(left) - i64::from(pad_x),
+            i64::from(top) - i64::from(pad_y),
+        );
+        Ok(self
+            .detect(Arc::new(DynamicImage::ImageRgb8(canvas)))
+            .await?
+            .detections
+            .into_iter()
+            .filter_map(|detection| drawn_text(detection, origin, drawn.bounds))
+            .collect())
     }
 
     async fn detect(&self, image: Arc<DynamicImage>) -> Result<KoharuLayoutDetections> {
@@ -212,17 +253,30 @@ struct ImageSize {
 async fn build_patch(
     input: &StageInput,
     image: &DynamicImage,
-    output: KoharuLayoutDetections,
+    output: Option<KoharuLayoutDetections>,
+    boxes: &[(DrawnBox, Vec<KoharuLayoutDetection>)],
     generation: &Generation,
 ) -> Result<koharu_scene::Patch> {
     let page = input.page;
     let mut edit = input.scene.edit_as(generation.clone());
     edit.observe_subtree(page)?;
-    remove_previous_regions(input, &mut edit, generation)
-        .context("failed to replace the previous detection regions")?;
-    write_page(input, &mut edit, page, image, output, generation)
-        .await
-        .context("failed to write detection output")?;
+    if let Some(output) = output {
+        remove_previous_regions(input, &mut edit, generation)
+            .context("failed to replace the previous detection regions")?;
+        write_page(input, &mut edit, page, image, output, boxes, generation)
+            .await
+            .context("failed to write detection output")?;
+    } else {
+        let size = ImageSize {
+            width: image.width(),
+            height: image.height(),
+        };
+        merge_text_mask(input, &mut edit, page, &boxed_detections(boxes), size)
+            .await
+            .context("failed to add drawn text boxes to the text mask")?;
+    }
+    write_drawn_boxes(&mut edit, page, boxes, generation)
+        .context("failed to link drawn text boxes to their detected text")?;
     finish(edit)
 }
 
@@ -261,6 +315,7 @@ async fn write_page(
     page: EntityId,
     image: &DynamicImage,
     output: KoharuLayoutDetections,
+    boxes: &[(DrawnBox, Vec<KoharuLayoutDetection>)],
     generation: &Generation,
 ) -> Result<()> {
     let KoharuLayoutDetections {
@@ -275,6 +330,13 @@ async fn write_page(
     if let Some(region) = input.region {
         detections.retain(|detection| intersects(detection.bbox, region));
     }
+    // A drawn box owns the text inside it, so page-wide text there would duplicate it.
+    detections.retain(|detection| {
+        detection.label != "text"
+            || !boxes
+                .iter()
+                .any(|(drawn, _)| contains_center(drawn.bounds, detection.bbox))
+    });
     non_maximum_suppression(&mut detections, 0.5);
     sort_by_layout(&mut detections);
 
@@ -283,6 +345,7 @@ async fn write_page(
         .context("failed to write detected regions")?;
     link_dialogue_regions(edit, &regions, generation)
         .context("failed to associate detected text with dialogue regions")?;
+    detections.extend(boxed_detections(boxes));
     write_masks(input, edit, page, &detections, size)
         .await
         .context("failed to write detection masks")
@@ -1373,17 +1436,53 @@ async fn write_mask(
     detections: &[KoharuLayoutDetection],
     size: ImageSize,
 ) -> Result<()> {
-    let mut mask = if size.width > 0 && size.height > 0 {
+    let mut mask = text_mask(detections, size);
+    if let Some(bounds) = input.region {
+        preserve_mask_outside_region(input, page, "text-mask", bounds, &mut mask).await?;
+    }
+    set_text_mask(edit, page, &mask, size)
+}
+
+async fn merge_text_mask(
+    input: &StageInput,
+    edit: &mut koharu_scene::Edit,
+    page: EntityId,
+    detections: &[KoharuLayoutDetection],
+    size: ImageSize,
+) -> Result<()> {
+    if detections.is_empty() {
+        return Ok(());
+    }
+    let mut mask = text_mask(detections, size);
+    if let Some(existing) = input.images.get(&input.scene, page, "text-mask").await? {
+        let existing = existing.to_luma8();
+        if existing.dimensions() != mask.dimensions() {
+            bail!("existing text-mask dimensions do not match page {page}");
+        }
+        for (target, previous) in mask.iter_mut().zip(existing.as_raw()) {
+            *target = (*target).max(*previous);
+        }
+    }
+    set_text_mask(edit, page, &mask, size)
+}
+
+fn text_mask(detections: &[KoharuLayoutDetection], size: ImageSize) -> GrayImage {
+    if size.width > 0 && size.height > 0 {
         let radius = ((size.width.max(size.height) as f32 / 1024.0) * 6.0)
             .round()
             .clamp(1.0, 255.0) as u8;
         closed_mask_for(detections, "text", size, radius)
     } else {
         mask_for(detections, "text", size)
-    };
-    if let Some(bounds) = input.region {
-        preserve_mask_outside_region(input, page, "text-mask", bounds, &mut mask).await?;
     }
+}
+
+fn set_text_mask(
+    edit: &mut koharu_scene::Edit,
+    page: EntityId,
+    mask: &GrayImage,
+    size: ImageSize,
+) -> Result<()> {
     let mut bytes = Cursor::new(Vec::new());
     PngEncoder::new_with_quality(&mut bytes, CompressionType::Fast, FilterType::NoFilter)
         .write_image(
@@ -1623,6 +1722,181 @@ fn intersects([left, top, right, bottom]: [f32; 4], region: crate::Bounds) -> bo
         && bottom > region.y as f32
 }
 
+/// A paragraph text box the user drew where no detected text backs it yet.
+struct DrawnBox {
+    content: EntityId,
+    geometry: Geometry,
+    bounds: [f32; 4],
+}
+
+fn has_text_regions(input: &StageInput) -> Result<bool> {
+    for entity in input.scene.descendants(input.page)? {
+        if input.contains_entity(entity.id())?
+            && entity
+                .component::<Region>()?
+                .is_some_and(|region| region.kind == TextRegion::kind())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn drawn_boxes(input: &StageInput) -> Result<Vec<DrawnBox>> {
+    let Some(group) = input.scene.page(input.page)?.text_group()? else {
+        return Ok(Vec::new());
+    };
+    let mut boxes = Vec::new();
+    for layer in group.text_layers()? {
+        if layer.layout()?.kind != TextLayoutKind::Paragraph
+            || !input.contains_entity(layer.id())?
+        {
+            continue;
+        }
+        let content = layer.content()?;
+        if content.source_region()?.is_some() {
+            continue;
+        }
+        let Some(geometry) = input.scene.component::<Geometry>(layer.id())? else {
+            continue;
+        };
+        let Some((left, top, right, bottom)) = geometry_extents(&geometry) else {
+            continue;
+        };
+        boxes.push(DrawnBox {
+            content: content.id(),
+            geometry,
+            bounds: [left as f32, top as f32, right as f32, bottom as f32],
+        });
+    }
+    Ok(boxes)
+}
+
+fn box_crop([left, top, right, bottom]: [f32; 4], width: u32, height: u32) -> [u32; 4] {
+    let margin = ((right - left).max(bottom - top) * 0.25).max(32.0);
+    [
+        (left - margin).floor().clamp(0.0, width as f32) as u32,
+        (top - margin).floor().clamp(0.0, height as f32) as u32,
+        (right + margin).ceil().clamp(0.0, width as f32) as u32,
+        (bottom + margin).ceil().clamp(0.0, height as f32) as u32,
+    ]
+}
+
+/// Moves a detection from the letterboxed crop onto the page, keeping only its pixels
+/// inside the box. `origin` is the page position of the crop canvas, which can be
+/// negative because the letterbox padding extends past the page.
+fn drawn_text(
+    detection: KoharuLayoutDetection,
+    (x, y): (i64, i64),
+    bounds: [f32; 4],
+) -> Option<KoharuLayoutDetection> {
+    if (detection.label != "text" && detection.label != "onomatopoeia")
+        || !valid_mask(&detection.mask)
+    {
+        return None;
+    }
+    let [left, top, right, bottom] = detection.bbox;
+    let bbox = [
+        left + x as f32,
+        top + y as f32,
+        right + x as f32,
+        bottom + y as f32,
+    ];
+    if !(bbox[0] < bounds[2] && bbox[2] > bounds[0] && bbox[1] < bounds[3] && bbox[3] > bounds[1]) {
+        return None;
+    }
+    let source = &detection.mask;
+    let source_left = i64::from(source.x) + x;
+    let source_top = i64::from(source.y) + y;
+    let left = source_left.max(bounds[0].floor().max(0.0) as i64);
+    let top = source_top.max(bounds[1].floor().max(0.0) as i64);
+    let right = (source_left + i64::from(source.width)).min(bounds[2].ceil() as i64);
+    let bottom = (source_top + i64::from(source.height)).min(bounds[3].ceil() as i64);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let mut pixels = Vec::with_capacity(((right - left) * (bottom - top)) as usize);
+    for page_y in top..bottom {
+        for page_x in left..right {
+            let index = (page_y - source_top) * i64::from(source.width) + (page_x - source_left);
+            pixels.push(source.pixels[index as usize]);
+        }
+    }
+    if !pixels.iter().any(|pixel| *pixel > 0) {
+        return None;
+    }
+    Some(KoharuLayoutDetection {
+        label_id: detection.label_id,
+        // Lettering the user boxed is removed like dialogue, sound effects included.
+        label: "text".to_owned(),
+        score: detection.score,
+        bbox,
+        area: detection.area,
+        mask: KoharuLayoutMask {
+            x: left as u32,
+            y: top as u32,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+            pixels,
+        },
+    })
+}
+
+fn contains_center(bounds: [f32; 4], [left, top, right, bottom]: [f32; 4]) -> bool {
+    let x = (left + right) * 0.5;
+    let y = (top + bottom) * 0.5;
+    x >= bounds[0] && x <= bounds[2] && y >= bounds[1] && y <= bounds[3]
+}
+
+fn boxed_detections(
+    boxes: &[(DrawnBox, Vec<KoharuLayoutDetection>)],
+) -> Vec<KoharuLayoutDetection> {
+    boxes
+        .iter()
+        .flat_map(|(_, detections)| detections.iter().cloned())
+        .collect()
+}
+
+fn write_drawn_boxes(
+    edit: &mut koharu_scene::Edit,
+    page: EntityId,
+    boxes: &[(DrawnBox, Vec<KoharuLayoutDetection>)],
+    generation: &Generation,
+) -> Result<()> {
+    for (drawn, detections) in boxes {
+        // A box with no lettering found stays unmasked and is searched again next run.
+        let Some(confidence) = detections
+            .iter()
+            .map(|detection| detection.score)
+            .max_by(f32::total_cmp)
+        else {
+            continue;
+        };
+        let region = edit.add_entity(page, At::End)?;
+        edit.set(region, &drawn.geometry)?;
+        edit.set(
+            region,
+            &Region {
+                origin: Origin::Generated(generation.clone()),
+                kind: TextRegion::kind(),
+                label: Some("text".to_owned()),
+            },
+        )?;
+        edit.set(
+            region,
+            &DetectionAnalysis {
+                origin: Origin::Generated(generation.clone()),
+                labels: vec![DetectionLabel {
+                    kind: TextRegion::kind(),
+                    confidence,
+                }],
+            },
+        )?;
+        edit.relate::<RecognizedFrom>(drawn.content, region)?;
+    }
+    Ok(())
+}
+
 fn detection_order(left: &KoharuLayoutDetection, right: &KoharuLayoutDetection) -> Ordering {
     left.bbox[1]
         .total_cmp(&right.bbox[1])
@@ -1838,17 +2112,21 @@ mod tests {
         morphology::{close, dilate},
     };
     use koharu_ml::koharu_layout_rfdetr_seg_2xl::{KoharuLayoutDetection, KoharuLayoutMask};
+    use std::sync::Arc;
+
     use koharu_scene::{
-        At, BubbleRegion, FitsTo, FlowsIn, Geometry, Inside, Origin, PageDraft, Session,
-        TextLayout, TextLayoutKind, TextRegion, Typography, WritingMode,
+        AssetRole, At, BubbleRegion, EntityId, FitsTo, FlowsIn, Geometry, Inside, Origin,
+        PageDraft, RegionSpec, Session, TextLayout, TextLayoutKind, TextRegion, Typography,
+        WritingMode,
     };
 
     use super::{
         DIALOGUE_MASK_CONTAINMENT_THRESHOLD, DetectedRegion, DetectedText, DetectionModel,
         ImageSize, KoharuLayoutRFDetrSeg2XLConfig, MaskPixel, PageRegions, Processor, RegionOutput,
-        StageInput, StageProcessor, closed_mask_for, color_palette, generation, infer_typography,
-        layout_order, link_dialogue_regions, mask_containment, mask_for, mask_geometry,
-        non_maximum_suppression, normalize_text_color, write_region,
+        StageInput, StageProcessor, build_patch, closed_mask_for, color_palette, drawn_boxes,
+        drawn_text, generation, infer_typography, layout_order, link_dialogue_regions,
+        mask_containment, mask_for, mask_geometry, non_maximum_suppression, normalize_text_color,
+        write_region,
     };
 
     #[test]
@@ -1902,6 +2180,186 @@ mod tests {
         );
 
         assert!(processor.skip(&input).unwrap());
+    }
+
+    fn add_drawn_box(
+        edit: &mut koharu_scene::Edit,
+        page: EntityId,
+        geometry: Geometry,
+    ) -> koharu_scene::Result<EntityId> {
+        let content = edit.add_text_content(page, At::End)?;
+        let layer = edit.add_text_layer(
+            page,
+            At::End,
+            content,
+            &TextLayout {
+                origin: Origin::User,
+                kind: TextLayoutKind::Paragraph,
+                angle_degrees: Some(0.0),
+            },
+        )?;
+        edit.set(layer, &geometry)?;
+        Ok(content)
+    }
+
+    #[tokio::test]
+    async fn detection_searches_drawn_boxes_on_a_detected_page() {
+        let mut session = Session::memory().await.unwrap();
+        let mut page = None;
+        let patch = session
+            .snapshot()
+            .patch(|edit| {
+                let id = edit.add_page(PageDraft::new("page", 100.0, 100.0), At::End)?;
+                edit.add_analysis_region::<TextRegion>(
+                    id,
+                    At::End,
+                    &Geometry::rectangle(10.0, 10.0, 20.0, 20.0),
+                    None,
+                )?;
+                add_drawn_box(edit, id, Geometry::rectangle(50.0, 50.0, 30.0, 20.0))?;
+                page = Some(id);
+                Ok(())
+            })
+            .unwrap();
+        let snapshot = session.commit(patch).await.unwrap().snapshot;
+        let input = StageInput::new(
+            snapshot,
+            page.unwrap(),
+            None,
+            None,
+            Arc::new(crate::ImageCache::default()),
+            None,
+        );
+        let processor = Processor::new(
+            DetectionModel::KoharuLayoutRFDetrSeg2XL(KoharuLayoutRFDetrSeg2XLConfig::default()),
+            koharu_ml::Device::cpu(),
+        );
+
+        assert!(!processor.skip(&input).unwrap());
+    }
+
+    #[tokio::test]
+    async fn drawn_boxes_adopt_found_text_and_extend_the_text_mask() {
+        let mut session = Session::memory().await.unwrap();
+        let mut ids = None;
+        let patch = session
+            .snapshot()
+            .patch(|edit| {
+                let page = edit.add_page(PageDraft::new("page", 100.0, 100.0), At::End)?;
+                edit.add_analysis_region::<TextRegion>(
+                    page,
+                    At::End,
+                    &Geometry::rectangle(0.0, 0.0, 10.0, 10.0),
+                    None,
+                )?;
+                let found = add_drawn_box(edit, page, Geometry::rectangle(40.0, 40.0, 20.0, 20.0))?;
+                let empty = add_drawn_box(edit, page, Geometry::rectangle(70.0, 70.0, 20.0, 20.0))?;
+                ids = Some((page, found, empty));
+                Ok(())
+            })
+            .unwrap();
+        let snapshot = session.commit(patch).await.unwrap().snapshot;
+        let (page, found, empty) = ids.unwrap();
+        let input = StageInput::new(
+            snapshot,
+            page,
+            None,
+            None,
+            Arc::new(crate::ImageCache::default()),
+            None,
+        );
+        let boxes = drawn_boxes(&input)
+            .unwrap()
+            .into_iter()
+            .map(|drawn| {
+                let detections = if drawn.content == found {
+                    vec![KoharuLayoutDetection {
+                        label_id: 0,
+                        label: "text".to_owned(),
+                        score: 0.8,
+                        bbox: [44.0, 44.0, 56.0, 56.0],
+                        area: 144,
+                        mask: KoharuLayoutMask {
+                            x: 44,
+                            y: 44,
+                            width: 12,
+                            height: 12,
+                            pixels: vec![u8::MAX; 144],
+                        },
+                    }]
+                } else {
+                    Vec::new()
+                };
+                (drawn, detections)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(boxes.len(), 2);
+        let image = image::DynamicImage::new_rgb8(100, 100);
+        let generation = generation(super::PRODUCER, super::MODEL_ID).unwrap();
+
+        let patch = build_patch(&input, &image, None, &boxes, &generation)
+            .await
+            .unwrap();
+        let snapshot = session.commit(patch).await.unwrap().snapshot;
+
+        let region = snapshot
+            .text_content(found)
+            .unwrap()
+            .source_region()
+            .unwrap()
+            .expect("the box with lettering gains a text region");
+        assert_eq!(region.region().unwrap().kind, TextRegion::kind());
+        assert!(
+            snapshot
+                .text_content(empty)
+                .unwrap()
+                .source_region()
+                .unwrap()
+                .is_none()
+        );
+        let asset = snapshot
+            .asset(page, &AssetRole::new("text-mask").unwrap())
+            .unwrap()
+            .expect("drawn text extends the page text mask");
+        let mask = image::load_from_memory(&snapshot.read_blob(asset.blob).await.unwrap())
+            .unwrap()
+            .to_luma8();
+        assert_eq!(mask.get_pixel(50, 50)[0], u8::MAX);
+        assert_eq!(mask.get_pixel(80, 80)[0], 0);
+    }
+
+    #[test]
+    fn letterboxed_box_detections_map_back_inside_the_box() {
+        let detection = KoharuLayoutDetection {
+            label_id: 1,
+            label: "onomatopoeia".to_owned(),
+            score: 0.4,
+            bbox: [100.0, 40.0, 140.0, 60.0],
+            area: 800,
+            mask: KoharuLayoutMask {
+                x: 100,
+                y: 40,
+                width: 40,
+                height: 20,
+                pixels: vec![u8::MAX; 800],
+            },
+        };
+
+        // The letterboxed canvas starts 20 pixels left of the page edge.
+        let mapped = drawn_text(detection, (-20, 70), [90.0, 115.0, 110.0, 125.0]).unwrap();
+
+        assert_eq!(mapped.label, "text");
+        assert_eq!(mapped.bbox, [80.0, 110.0, 120.0, 130.0]);
+        assert_eq!(
+            (
+                mapped.mask.x,
+                mapped.mask.y,
+                mapped.mask.width,
+                mapped.mask.height
+            ),
+            (90, 115, 20, 10)
+        );
+        assert!(mapped.mask.pixels.iter().all(|pixel| *pixel == u8::MAX));
     }
 
     #[tokio::test]

@@ -6,11 +6,12 @@ import { useTranslation } from 'react-i18next'
 import { useColorSampling } from '@/components/controls/ColorSampling'
 import { CanvasCommandBar } from '@/components/editor/CanvasCommandBar'
 import { CanvasOverlay } from '@/components/editor/CanvasOverlay'
+import { drawMaskStroke } from '@/components/editor/InpaintMask'
 import { StatusBar } from '@/components/editor/StatusBar'
 import { ToolBar } from '@/components/editor/ToolBar'
 import { useCanvas } from '@/components/editor/useCanvas'
 import { call } from '@/lib/backend'
-import { expandLayerSelection } from '@/lib/document'
+import { effectiveLayerVisibility, expandLayerSelection } from '@/lib/document'
 import {
   controlFrame,
   draftFrame,
@@ -21,6 +22,7 @@ import {
   translateFrames,
 } from '@/lib/geometry'
 import {
+  inpaintMaskKey,
   pageKey,
   pagesKey,
   preparedPageKey,
@@ -39,7 +41,13 @@ import {
   type CanvasTool,
 } from '@/lib/store'
 import { prefetchCanvasPages, workspaceColor, type CanvasColor } from '@koharu/bridge/canvas'
-import { commands, type Frame, type Point, type TransformFrame } from '@koharu/bridge/protocol'
+import {
+  commands,
+  type Frame,
+  type Point,
+  type RasterStrokeMode,
+  type TransformFrame,
+} from '@koharu/bridge/protocol'
 import { Button } from '@koharu/ui/components/button'
 
 const BRUSH_DIAMETER_STEP = 4
@@ -59,6 +67,16 @@ type Gesture =
   | { kind: 'move'; pointer: number; start: Point; originals: TransformFrame[] }
   | { kind: 'text'; pointer: number; start: Point; frame: Frame }
   | StrokeGesture
+  | MaskGesture
+
+interface MaskGesture {
+  kind: 'mask'
+  pointer: number
+  revision: number
+  mode: RasterStrokeMode
+  points: Point[]
+  diameter: number
+}
 
 interface StrokeGesture {
   kind: 'paint' | 'erase' | 'inpaint'
@@ -83,6 +101,7 @@ interface StrokeUpdate {
 export function CanvasWorkspace() {
   const { t } = useTranslation()
   const surface = useRef<HTMLDivElement>(null)
+  const maskCanvas = useRef<HTMLCanvasElement>(null)
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(null)
   const gesture = useRef<Gesture | null>(null)
   const previousPageIndex = useRef<number | null>(null)
@@ -108,6 +127,7 @@ export function CanvasWorkspace() {
   const layerFrames = useKoharuStore((state) => state.layerFrames)
   const tool = useKoharuStore((state) => state.tool)
   const brush = useKoharuStore((state) => state.brush)
+  const maskVisible = useKoharuStore((state) => state.inpaintMaskVisible)
   const selected = useKoharuStore((state) => state.selectedLayers)
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const setTool = useKoharuStore((state) => state.setTool)
@@ -122,6 +142,15 @@ export function CanvasWorkspace() {
     selected.length === 1
       ? page?.layers.find((layer) => layer.id === selected[0] && layer.type === 'raster')
       : undefined
+  // Without a selected raster, the Eraser restores original artwork through the cleanup layer.
+  const eraserTarget =
+    activeRaster ??
+    page?.layers.find(
+      (layer) =>
+        layer.type === 'raster' &&
+        layer.kind === 'cleanup' &&
+        effectiveLayerVisibility(page.layers, layer).visible,
+    )
 
   const enqueue = useCallback(<Result,>(operation: () => Promise<Result>): Promise<Result> => {
     const pending = commandQueue.current.then(operation)
@@ -211,6 +240,7 @@ export function CanvasWorkspace() {
       strokeUpdates.clear()
       canvas?.cancelStroke()
     }
+    if (current?.kind === 'mask') void refresh(inpaintMaskKey)
     if (transformActive.current) {
       transformUpdates.clear()
       transformActive.current = false
@@ -429,8 +459,12 @@ export function CanvasWorkspace() {
     if (!current || current.pointer !== pointer) {
       if (tool === 'select') {
         setHovered(
-          hitTestLayers(page.layers, clientPagePoint(sample.clientX, sample.clientY), layerFrames)
-            ?.id ?? null,
+          hitTestLayers(
+            page.layers,
+            clientPagePoint(sample.clientX, sample.clientY),
+            layerFrames,
+            page.regions,
+          )?.id ?? null,
         )
       }
       return
@@ -472,6 +506,14 @@ export function CanvasWorkspace() {
     } else if (current.kind === 'paint' || current.kind === 'erase' || current.kind === 'inpaint') {
       current.points.push(...points)
       strokeUpdates.schedule({ kind: current.kind, points })
+    } else if (current.kind === 'mask') {
+      drawMaskStroke(
+        maskCanvas.current,
+        current.mode,
+        [current.points.at(-1)!, ...points],
+        current.diameter,
+      )
+      current.points.push(...points)
     }
   }
 
@@ -481,6 +523,20 @@ export function CanvasWorkspace() {
     if (!current || !page) return
     if (current.kind === 'move') {
       finishTransform()
+    } else if (current.kind === 'mask') {
+      commitPending.current = true
+      void enqueue(() =>
+        call(
+          commands.commitMaskStroke,
+          current.revision,
+          current.mode,
+          current.points,
+          current.diameter,
+        ),
+      )
+        .then(() => refresh(projectKey))
+        .catch(() => refresh(inpaintMaskKey))
+        .finally(() => (commitPending.current = false))
     } else if (current.kind === 'text') {
       const { zoom } = useKoharuStore.getState().camera
       const pointText = current.frame.width < 4 / zoom && current.frame.height < 4 / zoom
@@ -506,30 +562,30 @@ export function CanvasWorkspace() {
       const operation =
         current.kind === 'paint'
           ? enqueue(() =>
-            call(commands.commitPaint, current.revision, current.layer, current.points, {
-              diameter: current.diameter,
-              color: current.color!,
-            }),
-          ).then((result) => {
-            selectLayers([result.layer])
-            return refresh(projectKey, pagesKey, pageKey)
-          })
-          : current.kind === 'erase'
-            ? enqueue(() =>
-              call(
-                commands.commitErase,
-                current.revision,
-                current.layer!,
-                current.points,
-                current.diameter,
-              ),
+              call(commands.commitPaint, current.revision, current.layer, current.points, {
+                diameter: current.diameter,
+                color: current.color!,
+              }),
             ).then((result) => {
               selectLayers([result.layer])
               return refresh(projectKey, pagesKey, pageKey)
             })
+          : current.kind === 'erase'
+            ? enqueue(() =>
+                call(
+                  commands.commitErase,
+                  current.revision,
+                  current.layer!,
+                  current.points,
+                  current.diameter,
+                ),
+              ).then((result) => {
+                selectLayers([result.layer])
+                return refresh(projectKey, pagesKey, pageKey)
+              })
             : enqueue(() =>
-              call(commands.commitInpaint, current.revision, current.points, current.diameter),
-            )
+                call(commands.commitInpaint, current.revision, current.points, current.diameter),
+              )
       commitPending.current = true
       void operation
         .catch(() => canvas?.cancelStroke())
@@ -578,7 +634,7 @@ export function CanvasWorkspace() {
                 translation: useKoharuStore.getState().camera.translation,
               }
             } else if (tool === 'select') {
-              const target = hitTestLayers(page.layers, point, layerFrames)
+              const target = hitTestLayers(page.layers, point, layerFrames, page.regions)
               const additive = event.shiftKey || event.ctrlKey || event.metaKey
               if (!target) {
                 if (!additive) selectLayers([])
@@ -597,6 +653,17 @@ export function CanvasWorkspace() {
               if (!originals.length) return
               gesture.current = { kind: 'move', pointer: event.pointerId, start: point, originals }
               beginTransform(originals)
+            } else if (maskVisible && (tool === 'draw' || tool === 'eraser')) {
+              const mode = tool === 'eraser' ? 'erase' : 'paint'
+              gesture.current = {
+                kind: 'mask',
+                pointer: event.pointerId,
+                revision: canvasRevision,
+                mode,
+                points: [point],
+                diameter: brush.diameter,
+              }
+              drawMaskStroke(maskCanvas.current, mode, [point], brush.diameter)
             } else if (tool === 'text') {
               const frame = draftFrame(point, point)
               gesture.current = { kind: 'text', pointer: event.pointerId, start: point, frame }
@@ -626,7 +693,7 @@ export function CanvasWorkspace() {
                 receiveError(errorMessage(error))
               }
             } else if (tool === 'eraser') {
-              if (!activeRaster) {
+              if (!eraserTarget) {
                 receiveError('Select a paint or cleanup layer before using the Eraser.')
                 return
               }
@@ -635,14 +702,14 @@ export function CanvasWorkspace() {
                 kind: 'erase',
                 pointer: event.pointerId,
                 revision: canvasRevision,
-                layer: activeRaster.id,
+                layer: eraserTarget.id,
                 points: [point],
                 diameter: brush.diameter,
               }
               try {
                 canvas.beginStroke({
                   kind: 'erase',
-                  layer: activeRaster.id,
+                  layer: eraserTarget.id,
                   point,
                   diameter: brush.diameter,
                 })
@@ -772,6 +839,7 @@ export function CanvasWorkspace() {
               cursor={cursor}
               brushSize={brush.diameter}
               showBrushCursor={isBrushTool(tool)}
+              maskCanvas={maskCanvas}
               onTransformStart={beginTransform}
               onTransformFrame={updateTransform}
               onTransformEnd={finishTransform}
@@ -919,7 +987,7 @@ class FrameCommand<Value> {
   constructor(
     private readonly execute: (value: Value) => void | Promise<unknown>,
     private readonly merge: (current: Value, next: Value) => Value = (_current, next) => next,
-  ) { }
+  ) {}
 
   schedule(value: Value): void {
     this.pending = this.pending === undefined ? value : this.merge(this.pending, value)
