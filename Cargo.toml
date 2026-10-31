@@ -56,8 +56,8 @@ ab_glyph = "0.2.32"
 clap = { version = "4.6.7", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-specta = { version = "=2.0.0-rc.25", features = ["derive", "url", "uuid"] }
-specta-typescript = "=0.0.12"
+specta = { version = "=2.0.0-rc.26", features = ["derive", "url", "uuid"] }
+specta-typescript = "=0.0.13"
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-rayon = "2.1.0"
 log = "0.4.34"
@@ -75,7 +75,7 @@ rayon = "1.12.0"
 tokenizers = { version = "0.23.2", features = ["onig"] }
 strum = { version = "0.28.0", features = ["derive"] }
 sysinfo = { version = "0.39.6", features = ["system"] }
-rars = "0.10.0"
+rars = "0.12.2"
 zip = { version = "9.0.2", features = ["deflate"] }
 dirs = "7.0.0"
 futures = "0.3.34"
@@ -109,8 +109,8 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Console",
     "Win32_UI_WindowsAndMessaging",
 ] }
-skrifa = "0.48.0"
-harfrust = "0.14.0"
+skrifa = "0.49.0"
+harfrust = "0.15.0"
 hypher = "0.1.8"
 icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 icu_properties = "2.3.0"
@@ -119,25 +119,25 @@ jieba-rs = "0.11.0"
 fontique = "0.12.0"
 pollster = "1.0.1"
 vello = "0.11.0"
-tauri = { git = "https://github.com/tauri-apps/tauri", rev = "1991873f5e2baa68773f21465f61baa93077498f", default-features = false, features = [
+tauri = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74", default-features = false, features = [
     "compression",
     "dynamic-acl",
     "specta",
 ] }
-tauri-build = { git = "https://github.com/tauri-apps/tauri", rev = "1991873f5e2baa68773f21465f61baa93077498f" }
-tauri-runtime-cef = { git = "https://github.com/tauri-apps/tauri", rev = "1991873f5e2baa68773f21465f61baa93077498f" }
+tauri-build = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
+tauri-runtime-cef = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
 tauri-plugin-log = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "3d836244bcb97cb1620405e8d1887da285a793d4" }
 tauri-plugin-opener = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "3d836244bcb97cb1620405e8d1887da285a793d4" }
 tauri-plugin-process = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "3d836244bcb97cb1620405e8d1887da285a793d4" }
 tauri-plugin-single-instance = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "3d836244bcb97cb1620405e8d1887da285a793d4" }
 tauri-plugin-updater = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "3d836244bcb97cb1620405e8d1887da285a793d4" }
 tauri-plugin-window-state = { git = "https://github.com/tauri-apps/plugins-workspace", rev = "3d836244bcb97cb1620405e8d1887da285a793d4" }
-tauri-specta = { git = "https://github.com/koharu-rs/tauri-specta", tag = "v2.0.0-rc.25-koharu.1", features = ["derive", "typescript"] }
+tauri-specta = { git = "https://github.com/tauri-apps/tauri-specta", rev = "6bcec0cdec0c92decf404c85ff01b4d8c3868599", features = ["derive", "typescript"] }
 schemars = { version = "1.2.2", features = ["chrono04", "indexmap2", "uuid1"] }
 uuid = { version = "1.26.1", features = ["v4", "v7", "serde"] }
 atomicwrites = "0.4.4"
 fs4 = "1.1.0"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 postcard = { version = "1.1.3", features = ["use-std"] }
 walkdir = "2.5.0"
 base64 = "0.23.1"
@@ -171,9 +171,9 @@ libc = "0.2.189"
 memmap2 = "0.9.11"
 
 [patch.crates-io]
-tauri = { git = "https://github.com/tauri-apps/tauri", rev = "1991873f5e2baa68773f21465f61baa93077498f" }
-tauri-plugin = { git = "https://github.com/tauri-apps/tauri", rev = "1991873f5e2baa68773f21465f61baa93077498f" }
-tauri-utils = { git = "https://github.com/tauri-apps/tauri", rev = "1991873f5e2baa68773f21465f61baa93077498f" }
+tauri = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
+tauri-plugin = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
 
 [profile.release]
 # Keep debug information for Sentry's native stack traces and source context.
