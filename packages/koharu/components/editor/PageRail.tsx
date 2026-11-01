@@ -39,6 +39,13 @@ import {
 } from '@koharu/bridge/protocol'
 import { Button } from '@koharu/ui/components/button'
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@koharu/ui/components/context-menu'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -196,11 +203,11 @@ export function PageRail() {
       })
   }
 
-  const deletePage = (page: string) =>
-    void call(commands.deletePages, [page])
+  const deletePages = (targets: string[]) =>
+    void call(commands.deletePages, targets)
       .then(() => {
-        selectPages(selected.filter((selectedPage) => selectedPage !== page))
-        if (active === page) selectLayers([])
+        selectPages(selected.filter((selectedPage) => !targets.includes(selectedPage)))
+        if (active && targets.includes(active)) selectLayers([])
         return refresh(projectKey, pagesKey, pageKey)
       })
       .catch(() => undefined)
@@ -291,6 +298,7 @@ export function PageRail() {
                 const item = visiblePages[virtualRow.index]
                 if (!item) return null
                 const { page, index } = item
+                const inSelection = selected.length > 1 && selected.includes(page.id)
                 return (
                   <div
                     key={virtualRow.key}
@@ -308,7 +316,8 @@ export function PageRail() {
                       onDragStart={() => setDragged(page.id)}
                       onDragEnd={() => setDragged(null)}
                       onRename={() => openRename(page)}
-                      onDelete={() => deletePage(page.id)}
+                      onDelete={() => deletePages([page.id])}
+                      onDeleteSelection={inSelection ? () => deletePages(selected) : undefined}
                       onDrop={() => {
                         if (dragged && dragged !== page.id) {
                           void call(commands.movePage, dragged, index)
@@ -452,6 +461,7 @@ function PageItem({
   onDragEnd,
   onRename,
   onDelete,
+  onDeleteSelection,
   onDrop,
 }: {
   page: PageSummary
@@ -464,79 +474,97 @@ function PageItem({
   onDragEnd: () => void
   onRename: () => void
   onDelete: () => void
+  onDeleteSelection?: () => void
   onDrop: () => void
 }) {
   const { t } = useTranslation()
 
+  // Right-clicking a page inside a multi-page selection acts on the whole selection, like a file manager.
   return (
-    <article
-      draggable
-      data-active={active}
-      data-selected={selected}
-      className={cn(
-        'group grid cursor-default grid-cols-[48px_minmax(0,1fr)] gap-2.5 rounded-xl p-1.5 transition-colors select-none',
-        active
-          ? 'bg-primary/[0.09] hover:bg-primary/[0.09]'
-          : selected
-            ? 'bg-foreground/[0.06] hover:bg-foreground/[0.08]'
-            : 'hover:bg-foreground/[0.045]',
-        dragged && 'opacity-50',
-      )}
-      onPointerEnter={onIntent}
-      onFocus={onIntent}
-      onClick={(event) => {
-        if ((event.target as HTMLElement).closest('button,[role="menuitem"]')) return
-        onSelect(event.ctrlKey || event.metaKey, event.shiftKey)
-      }}
-      onDoubleClick={onRename}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
-        event.preventDefault()
-        onDrop()
-      }}
-    >
-      <div className='grid h-16 w-12 place-items-center overflow-hidden rounded-lg bg-[var(--surface-well)]'>
-        {page.source_asset ? (
-          <PageThumbnail page={page.id} asset={page.source_asset} label={page.label} />
-        ) : (
-          <span className='text-[9px] text-muted-foreground'>{t('navigator.noImage')}</span>
-        )}
-      </div>
-      <div className='min-w-0 py-0.5'>
-        <div className='flex items-start gap-1'>
-          <span className='min-w-0 flex-1 truncate text-[10px] font-medium'>{page.label}</span>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant='ghost'
-                  size='icon-xs'
-                  aria-label={t('navigator.actionsFor', { page: page.label })}
-                  className='-mt-1 shrink-0 opacity-0 shadow-none group-hover:opacity-100 aria-expanded:opacity-100'
-                />
-              }
-            >
-              <MoreHorizontal />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align='end'>
-              <DropdownMenuItem onClick={onRename}>{t('navigator.rename')}</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant='destructive' onClick={onDelete}>
-                <Trash2 /> {t('navigator.delete')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+    <ContextMenu>
+      <ContextMenuTrigger
+        render={
+          <article
+            draggable
+            data-active={active}
+            data-selected={selected}
+            className={cn(
+              'group grid cursor-default grid-cols-[48px_minmax(0,1fr)] gap-2.5 rounded-xl p-1.5 transition-colors select-none',
+              active
+                ? 'bg-primary/[0.09] hover:bg-primary/[0.09]'
+                : selected
+                  ? 'bg-foreground/[0.06] hover:bg-foreground/[0.08]'
+                  : 'hover:bg-foreground/[0.045]',
+              'data-[popup-open]:ring-1 data-[popup-open]:ring-primary/60 data-[popup-open]:ring-inset',
+              dragged && 'opacity-50',
+            )}
+            onPointerEnter={onIntent}
+            onFocus={onIntent}
+            onClick={(event) => {
+              if ((event.target as HTMLElement).closest('button,[role="menuitem"]')) return
+              onSelect(event.ctrlKey || event.metaKey, event.shiftKey)
+            }}
+            onDoubleClick={onRename}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              onDrop()
+            }}
+          />
+        }
+      >
+        <div className='grid h-16 w-12 place-items-center overflow-hidden rounded-lg bg-[var(--surface-well)]'>
+          {page.source_asset ? (
+            <PageThumbnail page={page.id} asset={page.source_asset} label={page.label} />
+          ) : (
+            <span className='text-[9px] text-muted-foreground'>{t('navigator.noImage')}</span>
+          )}
         </div>
-        <p className='mt-1 text-[9px] leading-3.5 text-muted-foreground'>
-          {t('navigator.layerCount', { count: page.layer_count })}
-        </p>
-        <p className='mt-1 text-[9px] text-muted-foreground tabular-nums'>
-          {page.size.width} × {page.size.height}
-        </p>
-      </div>
-    </article>
+        <div className='min-w-0 py-0.5'>
+          <div className='flex items-start gap-1'>
+            <span className='min-w-0 flex-1 truncate text-[10px] font-medium'>{page.label}</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant='ghost'
+                    size='icon-xs'
+                    aria-label={t('navigator.actionsFor', { page: page.label })}
+                    className='-mt-1 shrink-0 opacity-0 shadow-none group-hover:opacity-100 aria-expanded:opacity-100'
+                  />
+                }
+              >
+                <MoreHorizontal />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align='end'>
+                <DropdownMenuItem onClick={onRename}>{t('navigator.rename')}</DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant='destructive' onClick={onDelete}>
+                  <Trash2 /> {t('navigator.delete')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <p className='mt-1 text-[9px] leading-3.5 text-muted-foreground'>
+            {t('navigator.layerCount', { count: page.layer_count })}
+          </p>
+          <p className='mt-1 text-[9px] text-muted-foreground tabular-nums'>
+            {page.size.width} × {page.size.height}
+          </p>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem disabled={Boolean(onDeleteSelection)} onClick={onRename}>
+          {t('navigator.rename')}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem variant='destructive' onClick={onDeleteSelection ?? onDelete}>
+          <Trash2 /> {t('navigator.delete')}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 

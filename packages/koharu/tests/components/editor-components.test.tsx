@@ -666,6 +666,56 @@ describe('greenfield editor', () => {
     expect(prefetch).toHaveBeenLastCalledWith(['page-2'])
   })
 
+  it('deletes the whole page selection from a selected page context menu', async () => {
+    installProject()
+    queryClient.setQueryData(pagesKey, [
+      ...(queryClient.getQueryData<PageSummary[]>(pagesKey) ?? []),
+      ...['page-2', 'page-3'].map((id, index) => ({
+        id,
+        label: `Page ${index + 2}`,
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        layer_count: 0,
+      })),
+    ])
+    useKoharuStore.setState({ selectedPages: ['page-2', 'page-3'] })
+    const deletePages = vi.spyOn(commands, 'deletePages').mockResolvedValue(null)
+    render(<PageRail />)
+
+    fireEvent.contextMenu(screen.getByText('Page 3').closest('article')!)
+    expect(await screen.findByRole('menuitem', { name: 'Rename' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    )
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+
+    await waitFor(() => expect(deletePages).toHaveBeenCalledWith(['page-2', 'page-3']))
+  })
+
+  it('acts on only the right-clicked page outside the selection', async () => {
+    installProject()
+    queryClient.setQueryData(pagesKey, [
+      ...(queryClient.getQueryData<PageSummary[]>(pagesKey) ?? []),
+      ...['page-2', 'page-3'].map((id, index) => ({
+        id,
+        label: `Page ${index + 2}`,
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        layer_count: 0,
+      })),
+    ])
+    useKoharuStore.setState({ selectedPages: ['page-2', 'page-3'] })
+    const deletePages = vi.spyOn(commands, 'deletePages').mockResolvedValue(null)
+    render(<PageRail />)
+
+    fireEvent.contextMenu(screen.getAllByRole('article')[0]!)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+
+    await waitFor(() => expect(deletePages).toHaveBeenCalledOnce())
+    expect(deletePages.mock.calls[0]![0]).toHaveLength(1)
+    expect(deletePages.mock.calls[0]![0]).not.toContain('page-2')
+  })
+
   it('switches tools and applies typography from the contextual inspector', async () => {
     const user = userEvent.setup()
     installProject()

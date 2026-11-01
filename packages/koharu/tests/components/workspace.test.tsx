@@ -213,6 +213,16 @@ describe('canvas interaction adapter', () => {
     input.remove()
   })
 
+  it('toggles the inpaint mask with its shortcut', () => {
+    installProject()
+    renderWorkspace()
+
+    fireEvent.keyDown(window, { key: 'Q' })
+    expect(useKoharuStore.getState().inpaintMaskVisible).toBe(true)
+    fireEvent.keyDown(window, { key: 'q' })
+    expect(useKoharuStore.getState().inpaintMaskVisible).toBe(false)
+  })
+
   it('announces WebGPU startup failures and offers recovery', () => {
     installProject()
     canvasState.status = 'error'
@@ -379,6 +389,55 @@ describe('canvas interaction adapter', () => {
     )
   })
 
+  it('resizes a drawn text box before it has a rendered translation', async () => {
+    installProject()
+    queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
+      ...page,
+      layers: [
+        {
+          type: 'text',
+          id: 'drawn',
+          parent: 'page',
+          geometry: {
+            points: [
+              { x: 10, y: 20 },
+              { x: 110, y: 20 },
+              { x: 110, y: 70 },
+              { x: 10, y: 70 },
+            ],
+          },
+          angle_degrees: 0,
+          visibility: { visible: true, opacity: 1 },
+          content: { id: 'content', source: null, translation: null, role: null, source_region: null },
+          typography: null,
+          layout: 'paragraph',
+          automatic_region: null,
+        },
+      ],
+    }))
+    useKoharuStore.setState({ selectedLayers: ['drawn'], layerFrames: {} })
+    canvas.beginTransform.mockClear()
+    canvas.finishTransform.mockClear()
+    const commit = vi.spyOn(commands, 'commitTransform').mockResolvedValue(2)
+    renderWorkspace()
+    Object.defineProperty(screen.getByTestId('canvas-overlay'), 'getBoundingClientRect', {
+      value: () => ({ x: 10, y: 20, width: 800, height: 600 }),
+    })
+    const handle = document.querySelector<HTMLElement>('[data-resize-handle="e"]')!
+
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 11, clientX: 120, clientY: 65 })
+    fireEvent.pointerMove(handle, { pointerId: 11, clientX: 140, clientY: 65 })
+    fireEvent.pointerUp(handle, { pointerId: 11, clientX: 140, clientY: 65 })
+
+    await waitFor(() =>
+      expect(commit).toHaveBeenCalledWith(1, [
+        { element: 'drawn', frame: { x: 10, y: 20, width: 120, height: 50, angle_degrees: 0 } },
+      ]),
+    )
+    expect(canvas.beginTransform).not.toHaveBeenCalled()
+    expect(canvas.finishTransform).not.toHaveBeenCalled()
+  })
+
   it('shows the automatic region behind the selected text controls', () => {
     installProject()
     queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
@@ -482,6 +541,47 @@ describe('canvas interaction adapter', () => {
     fireEvent.pointerUp(surface, { pointerId: 15, clientX: 50, clientY: 60 })
 
     expect(useKoharuStore.getState().selectedLayers).toEqual(['element'])
+  })
+
+  it('outlines every selected text area when several are selected', () => {
+    installProject()
+    const untranslated = (id: string, region: string): Layer => ({
+      type: 'text',
+      id,
+      parent: 'page',
+      geometry: null,
+      angle_degrees: null,
+      visibility: { visible: true, opacity: 1 },
+      content: { id: `${id}-content`, source: null, translation: null, role: null, source_region: region },
+      typography: null,
+      layout: 'paragraph',
+      automatic_region: null,
+    })
+    const square = (id: string, x: number) => ({
+      id,
+      parent: 'page',
+      geometry: {
+        points: [
+          { x, y: 10 },
+          { x: x + 20, y: 10 },
+          { x: x + 20, y: 30 },
+          { x, y: 30 },
+        ],
+      },
+      kind: 'text',
+      label: 'text',
+    })
+    queryClient.setQueryData(pageKey, (page: { layers: Layer[] }) => ({
+      ...page,
+      layers: [untranslated('first', 'first-region'), untranslated('second', 'second-region')],
+      regions: [square('first-region', 10), square('second-region', 50)],
+    }))
+    useKoharuStore.setState({ selectedLayers: ['first', 'second'] })
+
+    renderWorkspace()
+
+    const outlines = screen.getByTestId('selected-text-regions').querySelectorAll('g')
+    expect(outlines).toHaveLength(2)
   })
 
   it('erases the shown inpaint mask instead of a raster layer', async () => {

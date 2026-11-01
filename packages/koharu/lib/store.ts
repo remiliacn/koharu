@@ -1,6 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 import type {
   CanvasState,
@@ -34,7 +35,7 @@ export interface CanvasBrush {
   color: string
 }
 export type InspectorSection = 'copy' | 'type' | 'layers'
-export type ShortcutAction = CanvasTool | 'fit'
+export type ShortcutAction = CanvasTool | 'fit' | 'inpaintMask'
 export type Shortcuts = Record<ShortcutAction, string>
 export type PipelineScope = 'page' | 'selected-pages' | 'project'
 export const pipelineStages: readonly Stage[] = ['detection', 'ocr', 'translation', 'inpainting']
@@ -58,6 +59,7 @@ interface KoharuStore {
   tool: CanvasTool
   brush: CanvasBrush
   inpaintMaskVisible: boolean
+  eraserShowedMask: boolean
   inspector: InspectorSection
   processingScope: PipelineScope
   processingStages: Stage[]
@@ -87,59 +89,89 @@ export const defaultShortcuts: Shortcuts = {
   remove: 'j',
   pan: 'h',
   fit: '0',
+  inpaintMask: 'q',
 }
 
-export const useKoharuStore = create<KoharuStore>()((set) => ({
-  initialized: false,
-  preferences: null,
-  translationModels: [],
-  resources: null,
-  jobs: {},
-  downloads: {},
-  camera: { zoom: 1, translation: [0, 0], fitted: true },
-  canvasPage: null,
-  canvasRevision: null,
-  canvasGeneration: 0,
-  canvasSize: [0, 0],
-  fitCanvasRequest: 0,
-  layerFrames: {},
-  selectedLayers: [],
-  selectedPages: [],
-  tool: 'select',
-  brush: { diameter: 48, color: '#FFFFFF' },
-  inpaintMaskVisible: false,
-  inspector: 'copy',
-  processingScope: 'selected-pages',
-  processingStages: [...pipelineStages],
-  settingsOpen: false,
-  shortcuts: defaultShortcuts,
-  selectPages: (selectedPages) => set({ selectedPages: [...new Set(selectedPages)] }),
-  showInspector: (inspector) => set({ inspector }),
-  setProcessingScope: (processingScope) => set({ processingScope }),
-  setProcessingStages: (processingStages) => set({ processingStages }),
-  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
-  selectLayers: (selectedLayers) => set({ selectedLayers: [...new Set(selectedLayers)] }),
-  setTool: (tool) => set({ tool }),
-  setBrush: (brush) => set({ brush }),
-  setInpaintMaskVisible: (inpaintMaskVisible) => set({ inpaintMaskVisible }),
-  setShortcut: (action, key) =>
-    set((state) => ({
-      shortcuts: { ...state.shortcuts, [action]: key.toLowerCase().slice(0, 1) },
-    })),
-  requestCanvasFit: () => set((state) => ({ fitCanvasRequest: state.fitCanvasRequest + 1 })),
-  dismissJob: (id) =>
-    set((state) => {
-      const jobs = { ...state.jobs }
-      delete jobs[id]
-      return { jobs }
+export const useKoharuStore = create<KoharuStore>()(
+  persist(
+    (set) => ({
+      initialized: false,
+      preferences: null,
+      translationModels: [],
+      resources: null,
+      jobs: {},
+      downloads: {},
+      camera: { zoom: 1, translation: [0, 0], fitted: true },
+      canvasPage: null,
+      canvasRevision: null,
+      canvasGeneration: 0,
+      canvasSize: [0, 0],
+      fitCanvasRequest: 0,
+      layerFrames: {},
+      selectedLayers: [],
+      selectedPages: [],
+      tool: 'select',
+      brush: { diameter: 48, color: '#FFFFFF' },
+      inpaintMaskVisible: false,
+      eraserShowedMask: false,
+      inspector: 'copy',
+      processingScope: 'selected-pages',
+      processingStages: [...pipelineStages],
+      settingsOpen: false,
+      shortcuts: defaultShortcuts,
+      selectPages: (selectedPages) => set({ selectedPages: [...new Set(selectedPages)] }),
+      showInspector: (inspector) => set({ inspector }),
+      setProcessingScope: (processingScope) => set({ processingScope }),
+      setProcessingStages: (processingStages) => set({ processingStages }),
+      setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+      selectLayers: (selectedLayers) => set({ selectedLayers: [...new Set(selectedLayers)] }),
+      // The eraser shows the mask it edits and hides it again on exit, unless the user chose its state.
+      setTool: (tool) =>
+        set((state) => {
+          if (tool === state.tool) return {}
+          if (tool === 'eraser' && !state.inpaintMaskVisible) {
+            return { tool, inpaintMaskVisible: true, eraserShowedMask: true }
+          }
+          if (state.eraserShowedMask) {
+            return { tool, inpaintMaskVisible: false, eraserShowedMask: false }
+          }
+          return { tool }
+        }),
+      setBrush: (brush) => set({ brush }),
+      setInpaintMaskVisible: (inpaintMaskVisible) =>
+        set({ inpaintMaskVisible, eraserShowedMask: false }),
+      setShortcut: (action, key) =>
+        set((state) => ({
+          shortcuts: { ...state.shortcuts, [action]: key.toLowerCase().slice(0, 1) },
+        })),
+      requestCanvasFit: () => set((state) => ({ fitCanvasRequest: state.fitCanvasRequest + 1 })),
+      dismissJob: (id) =>
+        set((state) => {
+          const jobs = { ...state.jobs }
+          delete jobs[id]
+          return { jobs }
+        }),
+      dismissDownload: (id) =>
+        set((state) => {
+          const downloads = { ...state.downloads }
+          delete downloads[String(id)]
+          return { downloads }
+        }),
     }),
-  dismissDownload: (id) =>
-    set((state) => {
-      const downloads = { ...state.downloads }
-      delete downloads[String(id)]
-      return { downloads }
-    }),
-}))
+    {
+      name: 'koharu-shortcuts',
+      partialize: (state) => ({ shortcuts: state.shortcuts }),
+      // A binding saved before an action existed leaves that action on its default.
+      merge: (persisted, current) => ({
+        ...current,
+        shortcuts: {
+          ...current.shortcuts,
+          ...(persisted as Partial<Pick<KoharuStore, 'shortcuts'>> | undefined)?.shortcuts,
+        },
+      }),
+    },
+  ),
+)
 
 export function receiveStartupState(state: StartupState): void {
   useKoharuStore.setState({

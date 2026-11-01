@@ -311,6 +311,7 @@ function ShortcutPreferences() {
     'remove',
     'pan',
     'fit',
+    'inpaintMask',
   ]
   return (
     <PreferencePage
@@ -348,4 +349,5 @@ const shortcutKeys: Record<ShortcutAction, string> = {
   remove: 'tools.remove',
   pan: 'tools.pan',
   fit: 'canvas.fit',
+  inpaintMask: 'menu.inpaintMask',
 }

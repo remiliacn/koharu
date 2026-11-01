@@ -5,7 +5,7 @@ use std::{collections::HashSet, future::Future, sync::Arc};
 use anyhow::{Context as _, Result, bail};
 use koharu_rasterizer::{Rasterizer, ResourceId};
 use koharu_renderer::{Frame as RenderedFrame, LayerKind, Renderer};
-use koharu_scene::{Commit, EntityId, Geometry, Point, Revision, Snapshot};
+use koharu_scene::{Commit, EntityId, Geometry, Origin, Point, Revision, Snapshot};
 use parking_lot::{Mutex as SyncMutex, RwLock};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -27,6 +27,31 @@ impl Frame {
             .all(f32::is_finite)
             && self.width > 0.0
             && self.height > 0.0
+    }
+
+    pub fn geometry(self) -> Result<Geometry> {
+        if !self.is_valid() {
+            bail!("frame must contain finite coordinates and positive dimensions");
+        }
+        let center_x = f64::from(self.x + self.width * 0.5);
+        let center_y = f64::from(self.y + self.height * 0.5);
+        let half_width = f64::from(self.width) * 0.5;
+        let half_height = f64::from(self.height) * 0.5;
+        let (sin, cos) = f64::from(self.angle_degrees).to_radians().sin_cos();
+        Ok(Geometry {
+            origin: Origin::User,
+            points: [
+                (-half_width, -half_height),
+                (half_width, -half_height),
+                (half_width, half_height),
+                (-half_width, half_height),
+            ]
+            .map(|(x, y)| Point {
+                x: center_x + x * cos - y * sin,
+                y: center_y + x * sin + y * cos,
+            })
+            .into(),
+        })
     }
 }
 
@@ -254,12 +279,15 @@ impl Desktop {
             if !element.frame.is_valid() {
                 bail!("canvas transform frame must be finite and non-empty");
             }
-            let layer = rendered.layer(element.element).with_context(|| {
-                format!(
-                    "canvas transform element {} is not rendered",
-                    element.element
-                )
-            })?;
+            // Text without a translation is not prepared, so its control frame is its authored box.
+            let Some(layer) = rendered.layer(element.element) else {
+                geometries.push((
+                    element.element,
+                    element.frame.geometry()?,
+                    element.frame.angle_degrees,
+                ));
+                continue;
+            };
             let layer_presentation = layer.presentation();
             if !layer_presentation.visible
                 || layer_presentation.opacity <= 0.0

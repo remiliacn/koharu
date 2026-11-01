@@ -3,6 +3,7 @@
 import {
   Brush,
   Eraser,
+  GripHorizontal,
   Hand,
   Minus,
   MousePointer2,
@@ -12,6 +13,7 @@ import {
   Sparkles,
   Type,
 } from 'lucide-react'
+import { useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ColorWell } from '@/components/controls/ColorWell'
@@ -39,6 +41,7 @@ import {
 } from '@koharu/ui/components/popover'
 import { Slider } from '@koharu/ui/components/slider'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@koharu/ui/components/tooltip'
+import { cn } from '@koharu/ui/lib/utils'
 
 const tools = [
   ['select', MousePointer2],
@@ -59,9 +62,40 @@ export function ToolBar() {
   const setBrush = useKoharuStore((state) => state.setBrush)
   const shortcuts = useKoharuStore((state) => state.shortcuts)
   const hasBrush = isBrushTool(active)
+  const toolbar = useRef<HTMLElement>(null)
+  const { position, grip } = useToolBarDrag(toolbar)
 
   return (
-    <aside className='absolute top-3 left-3 z-20 flex w-11 flex-col rounded-2xl border border-border bg-[var(--surface-floating)] p-1 shadow-[var(--shadow-toolrail)]'>
+    <aside
+      ref={toolbar}
+      data-testid='toolbar'
+      className={cn(
+        'absolute z-20 flex w-11 flex-col rounded-2xl border border-border bg-[var(--surface-floating)] p-1 shadow-[var(--shadow-toolrail)]',
+        !position && 'top-3 left-3',
+      )}
+      style={
+        position
+          ? {
+              left: `min(${position.x}px, calc(100% - 2.75rem))`,
+              top: `min(${position.y}px, calc(100% - 2rem))`,
+            }
+          : undefined
+      }
+    >
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <div
+              aria-label={t('tools.moveToolbar')}
+              className='flex h-3.5 cursor-grab touch-none items-center justify-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing'
+              {...grip}
+            />
+          }
+        >
+          <GripHorizontal className='size-3.5' />
+        </TooltipTrigger>
+        <TooltipContent side='right'>{t('tools.moveToolbar')}</TooltipContent>
+      </Tooltip>
       <div className='flex flex-col items-center py-0.5'>
         {tools.map(([tool, Icon], index) => (
           <div key={tool} className='contents'>
@@ -112,10 +146,70 @@ export function ToolBar() {
   )
 }
 
+function useToolBarDrag(toolbar: RefObject<HTMLElement | null>) {
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null)
+  const drag = useRef<{ pointer: number; offsetX: number; offsetY: number } | null>(null)
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    const element = toolbar.current
+    if (event.button !== 0 || drag.current || !element) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const bounds = element.getBoundingClientRect()
+    drag.current = {
+      pointer: event.pointerId,
+      offsetX: event.clientX - bounds.left,
+      offsetY: event.clientY - bounds.top,
+    }
+  }
+
+  const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const current = drag.current
+    const element = toolbar.current
+    const container = element?.offsetParent
+    if (current?.pointer !== event.pointerId || !element || !(container instanceof HTMLElement)) {
+      return
+    }
+    const bounds = container.getBoundingClientRect()
+    setPosition({
+      x: clamp(
+        event.clientX - bounds.left - current.offsetX,
+        0,
+        Math.max(0, bounds.width - element.offsetWidth),
+      ),
+      y: clamp(
+        event.clientY - bounds.top - current.offsetY,
+        0,
+        Math.max(0, bounds.height - element.offsetHeight),
+      ),
+    })
+  }
+
+  const finish = (event: ReactPointerEvent<HTMLElement>) => {
+    if (drag.current?.pointer !== event.pointerId) return
+    drag.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  return {
+    position,
+    grip: {
+      onPointerDown,
+      onPointerMove,
+      onPointerUp: finish,
+      onPointerCancel: finish,
+      onLostPointerCapture: finish,
+    },
+  }
+}
+
 function InpaintMaskToggle({ disabled }: { disabled: boolean }) {
   const { t } = useTranslation()
   const visible = useKoharuStore((state) => state.inpaintMaskVisible)
   const setVisible = useKoharuStore((state) => state.setInpaintMaskVisible)
+  const shortcut = useKoharuStore((state) => state.shortcuts.inpaintMask)
 
   return (
     <Tooltip>
@@ -136,7 +230,10 @@ function InpaintMaskToggle({ disabled }: { disabled: boolean }) {
       >
         <ScanEye className='size-4' />
       </TooltipTrigger>
-      <TooltipContent side='right'>{t('menu.inpaintMask')}</TooltipContent>
+      <TooltipContent side='right'>
+        {t('menu.inpaintMask')}
+        <span className='ml-2 opacity-60'>{shortcut.toUpperCase()}</span>
+      </TooltipContent>
     </Tooltip>
   )
 }

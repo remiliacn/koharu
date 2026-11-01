@@ -507,6 +507,7 @@
     "draw": "Brush",
     "eraser": "Eraser",
     "increaseBrushSize": "Increase brush size",
+    "moveToolbar": "Move toolbar",
     "pan": "Pan",
     "remove": "Remove",
     "select": "Select",

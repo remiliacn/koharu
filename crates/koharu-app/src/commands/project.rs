@@ -425,7 +425,7 @@ impl Project {
         kind: TextLayoutKind,
     ) -> Result<(Commit, EntityId)> {
         let snapshot = self.snapshot();
-        let geometry = Self::geometry_from_frame(frame)?;
+        let geometry = frame.geometry()?;
         let mut layer = None;
         let patch = snapshot.patch(|edit| {
             let content = edit.add_text_content(page, At::End)?;
@@ -1264,38 +1264,6 @@ impl Project {
         }
         roots.sort_unstable();
         Ok(roots)
-    }
-
-    fn geometry_from_frame(frame: Frame) -> Result<SceneGeometry> {
-        if !frame.x.is_finite()
-            || !frame.y.is_finite()
-            || !frame.width.is_finite()
-            || !frame.height.is_finite()
-            || !frame.angle_degrees.is_finite()
-            || frame.width <= 0.0
-            || frame.height <= 0.0
-        {
-            bail!("frame must contain finite coordinates and positive dimensions");
-        }
-        let center_x = f64::from(frame.x + frame.width * 0.5);
-        let center_y = f64::from(frame.y + frame.height * 0.5);
-        let half_width = f64::from(frame.width) * 0.5;
-        let half_height = f64::from(frame.height) * 0.5;
-        let (sin, cos) = f64::from(frame.angle_degrees).to_radians().sin_cos();
-        Ok(SceneGeometry {
-            origin: Origin::User,
-            points: [
-                (-half_width, -half_height),
-                (half_width, -half_height),
-                (half_width, half_height),
-                (-half_width, half_height),
-            ]
-            .map(|(x, y)| ScenePoint {
-                x: center_x + x * cos - y * sin,
-                y: center_y + x * sin + y * cos,
-            })
-            .into(),
-        })
     }
 }
 

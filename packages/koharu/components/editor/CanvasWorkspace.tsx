@@ -11,7 +11,7 @@ import { StatusBar } from '@/components/editor/StatusBar'
 import { ToolBar } from '@/components/editor/ToolBar'
 import { useCanvas } from '@/components/editor/useCanvas'
 import { call } from '@/lib/backend'
-import { effectiveLayerVisibility, expandLayerSelection } from '@/lib/document'
+import { effectiveLayerVisibility, expandLayerSelection, isTextLayer } from '@/lib/document'
 import {
   controlFrame,
   draftFrame,
@@ -62,6 +62,10 @@ const canvasCursors = {
   remove: 'none',
   pan: 'grab',
 } as const satisfies Record<CanvasTool, string | undefined>
+
+const frameKeys = ['x', 'y', 'width', 'height', 'angle_degrees'] as const satisfies ReadonlyArray<
+  keyof Frame
+>
 
 type Gesture =
   | { kind: 'pan'; pointer: number; start: Point; translation: [number, number] }
@@ -116,6 +120,8 @@ export function CanvasWorkspace() {
   const spaceHeld = useRef(false)
   const transformActive = useRef(false)
   const transformRevision = useRef<number | null>(null)
+  const transformOriginals = useRef<TransformFrame[]>([])
+  const transformRendered = useRef<ReadonlySet<string>>(new Set())
   const transformFinal = useRef<TransformFrame[]>([])
   const commitPending = useRef(false)
   const commandQueue = useRef<Promise<void>>(Promise.resolve())
@@ -171,9 +177,10 @@ export function CanvasWorkspace() {
     return pending
   }, [])
 
-  const transformUpdates = useFrameCommand((elements: TransformFrame[]) =>
-    canvas?.updateTransform(elements),
-  )
+  const transformUpdates = useFrameCommand((elements: TransformFrame[]) => {
+    const rendered = elements.filter(({ element }) => transformRendered.current.has(element))
+    if (rendered.length) canvas?.updateTransform(rendered)
+  })
   const strokeUpdates = useFrameCommand(
     ({ points }: StrokeUpdate) => canvas?.extendStroke(points),
     mergeStrokeUpdates,
@@ -192,16 +199,25 @@ export function CanvasWorkspace() {
       transformUpdates.clear()
       transformActive.current = true
       transformRevision.current = canvasRevision
+      transformOriginals.current = elements
       transformFinal.current = elements
       setPreviews(Object.fromEntries(elements.map(({ element, frame }) => [element, frame])))
+      // Text without a translation is absent from the prepared frame; only the overlay previews it.
+      const rendered = elements.filter(
+        ({ element }) =>
+          element in layerFrames ||
+          !page?.layers.some((layer) => layer.id === element && isTextLayer(layer)),
+      )
+      transformRendered.current = new Set(rendered.map(({ element }) => element))
+      if (!rendered.length) return
       try {
-        canvas.beginTransform(elements)
+        canvas.beginTransform(rendered)
       } catch (error) {
         transformActive.current = false
         receiveError(errorMessage(error))
       }
     },
-    [canvas, canvasRevision, transformUpdates],
+    [canvas, canvasRevision, layerFrames, page, transformUpdates],
   )
 
   const updateTransform = useCallback(
@@ -222,9 +238,20 @@ export function CanvasWorkspace() {
     const elements = transformFinal.current
     transformRevision.current = null
     try {
-      canvas?.finishTransform()
+      if (transformRendered.current.size) canvas?.finishTransform()
     } catch (error) {
       receiveError(errorMessage(error))
+      setPreviews({})
+      return
+    }
+    const unchanged = elements.every(({ element, frame }, index) => {
+      const original = transformOriginals.current[index]
+      return (
+        original?.element === element &&
+        frameKeys.every((key) => original.frame[key] === frame[key])
+      )
+    })
+    if (unchanged) {
       setPreviews({})
       return
     }
@@ -407,6 +434,10 @@ export function CanvasWorkspace() {
       }
       if (event.key.toLowerCase() === state.shortcuts.fit) {
         requestCanvasFit()
+        return
+      }
+      if (event.key.toLowerCase() === state.shortcuts.inpaintMask && page) {
+        state.setInpaintMaskVisible(!state.inpaintMaskVisible)
         return
       }
       if (event.key === 'Escape') {

@@ -84,6 +84,14 @@ export function CanvasOverlay({
     !layers.some(({ layer }) => layer.id === hoveredLayer.id)
       ? textRegion(page, hoveredLayer)
       : undefined
+  const selectedRegions = multipleSelected
+    ? page.layers.flatMap((layer) => {
+        if (!selectedIds.has(layer.id) || !isTextLayer(layer)) return []
+        if (previews[layer.id] ?? controlFrame(layer, frames)) return []
+        const region = textRegion(page, layer)
+        return region ? [{ layer: layer.id, geometry: region.geometry }] : []
+      })
+    : []
   const selectionControl = multipleSelected
     ? undefined
     : layers.find(({ layer }) => selectedIds.has(layer.id) && selectableLayer(layer))
@@ -101,10 +109,14 @@ export function CanvasOverlay({
         <AutomaticRegionOverlay geometry={automaticRegion.geometry} camera={camera} />
       )}
       {hoveredRegion && <HoveredRegionOverlay geometry={hoveredRegion.geometry} camera={camera} />}
+      {selectedRegions.length > 0 && (
+        <SelectedRegionsOverlay regions={selectedRegions} camera={camera} />
+      )}
       {layers.map(({ layer, frame, opacity }) => {
         const position = cssFrame(frame, camera)
         const selected = selectedIds.has(layer.id) && selectableLayer(layer)
         const highlighted = !selected && hovered === layer.id
+        const outlined = selected && multipleSelected
         return (
           <div
             key={layer.id}
@@ -117,10 +129,14 @@ export function CanvasOverlay({
               height: position.height,
               transform: `rotate(${position.angle}deg)`,
               transformOrigin: '50% 50%',
-              border:
-                highlighted || (selected && multipleSelected)
+              border: outlined
+                ? '2px solid var(--canvas-selection)'
+                : highlighted
                   ? '1px solid var(--canvas-selection)'
                   : undefined,
+              boxShadow: outlined
+                ? '0 0 0 1px var(--canvas-region-contrast), inset 0 0 0 1px var(--canvas-region-contrast)'
+                : undefined,
               opacity,
               willChange: selected ? 'left, top, width, height, transform' : undefined,
             }}
@@ -185,6 +201,40 @@ function HoveredRegionOverlay({ geometry, camera }: { geometry: Geometry; camera
         strokeWidth='1'
         vectorEffect='non-scaling-stroke'
       />
+    </svg>
+  )
+}
+
+function SelectedRegionsOverlay({
+  regions,
+  camera,
+}: {
+  regions: Array<{ layer: EntityId; geometry: Geometry }>
+  camera: Camera
+}) {
+  return (
+    <svg className='absolute inset-0 size-full overflow-hidden' data-testid='selected-text-regions'>
+      {regions.map(({ layer, geometry }) => {
+        const points = svgPoints(geometry, camera)
+        return (
+          <g key={layer}>
+            <polygon
+              points={points}
+              fill='none'
+              stroke='var(--canvas-region-contrast)'
+              strokeWidth='4'
+              vectorEffect='non-scaling-stroke'
+            />
+            <polygon
+              points={points}
+              fill='none'
+              stroke='var(--canvas-selection)'
+              strokeWidth='2'
+              vectorEffect='non-scaling-stroke'
+            />
+          </g>
+        )
+      })}
     </svg>
   )
 }

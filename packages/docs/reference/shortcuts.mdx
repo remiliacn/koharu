@@ -18,6 +18,9 @@ Tool and editing shortcuts apply while a project is open and an input, textarea,
 | Remove       | `J` |
 | Pan          | `H` |
 | Fit Window   | `0` |
+| Inpaint mask | `Q` |
+
+`Q` shows or hides the editable inpainting mask. Choosing the Eraser shows the mask until you switch tools.
 
 Change tool characters in **Settings → Shortcuts**.
 
@@ -45,7 +48,8 @@ The active tool does not change while `Space` is held. Switching away from Kohar
 
 <Tip>
   Use a unique character for each tool. If bindings conflict, the Fit Window key is checked first,
-  then the first matching tool in toolbar order wins. Custom bindings reset when Koharu restarts.
+  then the inpaint mask key, then the first matching tool in toolbar order. Custom bindings are kept
+  after Koharu restarts.
 </Tip>
 
 Shortcuts affect the desktop interface, not the exported page.

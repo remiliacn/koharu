@@ -507,6 +507,7 @@
     "draw": "描画",
     "eraser": "消しゴム",
     "increaseBrushSize": "ブラシサイズを拡大",
+    "moveToolbar": "ツールバーを移動",
     "pan": "移動",
     "remove": "削除",
     "select": "選択",
