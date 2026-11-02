@@ -160,15 +160,22 @@ export const useKoharuStore = create<KoharuStore>()(
     }),
     {
       name: 'koharu-shortcuts',
-      partialize: (state) => ({ shortcuts: state.shortcuts }),
-      // A binding saved before an action existed leaves that action on its default.
-      merge: (persisted, current) => ({
-        ...current,
-        shortcuts: {
-          ...current.shortcuts,
-          ...(persisted as Partial<Pick<KoharuStore, 'shortcuts'>> | undefined)?.shortcuts,
-        },
+      partialize: (state) => ({
+        shortcuts: state.shortcuts,
+        processingStages: state.processingStages,
       }),
+      // A binding saved before an action existed leaves that action on its default.
+      merge: (persisted, current) => {
+        const saved = persisted as
+          | Partial<Pick<KoharuStore, 'shortcuts' | 'processingStages'>>
+          | undefined
+        const stages = pipelineStages.filter((stage) => saved?.processingStages?.includes(stage))
+        return {
+          ...current,
+          shortcuts: { ...current.shortcuts, ...saved?.shortcuts },
+          processingStages: stages.length > 0 ? stages : current.processingStages,
+        }
+      },
     },
   ),
 )

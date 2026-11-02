@@ -346,6 +346,27 @@ impl Edit {
         role: &AssetRole,
         value: AssetInput,
     ) -> Result<()> {
+        self.write_asset(entity, role, value, false)
+    }
+
+    /// Replaces an asset even when the user last edited it. The caller must already have
+    /// carried the user's edits it keeps into `value`; ownership returns to this edit.
+    pub fn adopt_asset(
+        &mut self,
+        entity: EntityId,
+        role: &AssetRole,
+        value: AssetInput,
+    ) -> Result<()> {
+        self.write_asset(entity, role, value, true)
+    }
+
+    fn write_asset(
+        &mut self,
+        entity: EntityId,
+        role: &AssetRole,
+        value: AssetInput,
+        adopt_user: bool,
+    ) -> Result<()> {
         let bytes = bytes::Bytes::from_owner(value.bytes);
         let blob = BlobId::for_bytes(&bytes);
         self.attachments.push((blob, bytes));
@@ -360,7 +381,9 @@ impl Edit {
             })
             .transpose()?
             .unwrap_or_default();
-        if let Some(existing) = assets.values.get(role) {
+        if let Some(existing) = assets.values.get(role)
+            && !(adopt_user && existing.origin == Origin::User)
+        {
             self.validate_origin_removal(Some(&existing.origin))?;
         }
         self.observe_component(owner, key.clone())?;

@@ -43,6 +43,7 @@ const ANGLE_SEARCH_STEP_DEGREES: f64 = 0.5;
 const TYPOGRAPHY_SAMPLE_MARGIN: f32 = 2.0;
 const COLOR_SNAP_DARK_LUMINANCE: u32 = 64 * 256;
 const COLOR_SNAP_LIGHT_LUMINANCE: u32 = 191 * 256;
+const COLOR_SNAP_MAX_CHANNEL_SPREAD: u8 = 48;
 const COLOR_CLUSTER_MIN_DISTANCE_SQUARED: u32 = 32 * 32;
 const COLOR_CLUSTER_COUNT: usize = 4;
 const MIN_EXTREME_COLOR_PIXELS: u32 = 4;
@@ -271,9 +272,16 @@ async fn build_patch(
             width: image.width(),
             height: image.height(),
         };
-        merge_text_mask(input, &mut edit, page, &boxed_detections(boxes), size)
-            .await
-            .context("failed to add drawn text boxes to the text mask")?;
+        merge_text_mask(
+            input,
+            &mut edit,
+            page,
+            &boxed_detections(boxes),
+            &pending_contents(boxes),
+            size,
+        )
+        .await
+        .context("failed to add drawn text boxes to the text mask")?;
     }
     write_drawn_boxes(&mut edit, page, boxes, generation)
         .context("failed to link drawn text boxes to their detected text")?;
@@ -346,9 +354,16 @@ async fn write_page(
     link_dialogue_regions(edit, &regions, generation)
         .context("failed to associate detected text with dialogue regions")?;
     detections.extend(boxed_detections(boxes));
-    write_masks(input, edit, page, &detections, size)
-        .await
-        .context("failed to write detection masks")
+    write_masks(
+        input,
+        edit,
+        page,
+        &detections,
+        &pending_contents(boxes),
+        size,
+    )
+    .await
+    .context("failed to write detection masks")
 }
 
 fn write_regions<'a>(
@@ -1336,7 +1351,13 @@ fn color_distance_squared(left: [u8; 3], right: [u8; 3]) -> u32 {
         .sum()
 }
 
+// Luma alone ranks saturated reds, blues, and purples as dark, so only
+// near-neutral colors snap; a chromatic color is deliberate paint.
 fn normalize_text_color(color: [u8; 3]) -> [u8; 3] {
+    let spread = color.iter().max().unwrap() - color.iter().min().unwrap();
+    if spread > COLOR_SNAP_MAX_CHANNEL_SPREAD {
+        return color;
+    }
     let luminance = color_luminance(color);
     if luminance <= COLOR_SNAP_DARK_LUMINANCE {
         [0, 0, 0]
@@ -1422,9 +1443,10 @@ async fn write_masks(
     edit: &mut koharu_scene::Edit,
     page: EntityId,
     detections: &[KoharuLayoutDetection],
+    pending: &[EntityId],
     size: ImageSize,
 ) -> Result<()> {
-    write_mask(input, edit, page, detections, size).await?;
+    write_mask(input, edit, page, detections, pending, size).await?;
     edit.remove_asset(page, &AssetRole::new("bubble-mask")?)?;
     Ok(())
 }
@@ -1434,12 +1456,14 @@ async fn write_mask(
     edit: &mut koharu_scene::Edit,
     page: EntityId,
     detections: &[KoharuLayoutDetection],
+    pending: &[EntityId],
     size: ImageSize,
 ) -> Result<()> {
     let mut mask = text_mask(detections, size);
     if let Some(bounds) = input.region {
         preserve_mask_outside_region(input, page, "text-mask", bounds, &mut mask).await?;
     }
+    preserve_translated_layers(input, page, pending, &mut mask).await?;
     set_text_mask(edit, page, &mask, size)
 }
 
@@ -1448,6 +1472,7 @@ async fn merge_text_mask(
     edit: &mut koharu_scene::Edit,
     page: EntityId,
     detections: &[KoharuLayoutDetection],
+    pending: &[EntityId],
     size: ImageSize,
 ) -> Result<()> {
     if detections.is_empty() {
@@ -1463,7 +1488,81 @@ async fn merge_text_mask(
             *target = (*target).max(*previous);
         }
     }
+    preserve_translated_layers(input, page, pending, &mut mask).await?;
     set_text_mask(edit, page, &mask, size)
+}
+
+// A translation marks a text layer's lettering as finished, so the mask under it keeps its
+// current pixels even when the user painted them. Detection owns the rest of the mask and
+// overwrites hand edits there. Drawn boxes detected in this run are still in progress.
+async fn preserve_translated_layers(
+    input: &StageInput,
+    page: EntityId,
+    pending: &[EntityId],
+    mask: &mut GrayImage,
+) -> Result<()> {
+    let areas = translated_layer_areas(input, page, pending, mask.width(), mask.height())?;
+    if areas.is_empty() {
+        return Ok(());
+    }
+    let Some(previous) = input.images.get(&input.scene, page, "text-mask").await? else {
+        return Ok(());
+    };
+    let previous = previous.to_luma8();
+    if previous.dimensions() != mask.dimensions() {
+        bail!("existing text-mask dimensions do not match page {page}");
+    }
+    for [left, top, right, bottom] in areas {
+        for y in top..bottom {
+            for x in left..right {
+                mask.put_pixel(x, y, *previous.get_pixel(x, y));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn translated_layer_areas(
+    input: &StageInput,
+    page: EntityId,
+    pending: &[EntityId],
+    width: u32,
+    height: u32,
+) -> Result<Vec<[u32; 4]>> {
+    let Some(group) = input.scene.page(page)?.text_group()? else {
+        return Ok(Vec::new());
+    };
+    let mut areas = Vec::new();
+    for layer in group.text_layers()? {
+        let content = layer.content()?;
+        let translated = content
+            .translation()?
+            .is_some_and(|translation| !translation.text.value.trim().is_empty());
+        if !translated || pending.contains(&content.id()) {
+            continue;
+        }
+        let geometry = match input.scene.component::<Geometry>(layer.id())? {
+            Some(geometry) => geometry,
+            None => match content.source_region()? {
+                Some(region) => region.geometry()?,
+                None => continue,
+            },
+        };
+        let Some((left, top, right, bottom)) = geometry_extents(&geometry) else {
+            continue;
+        };
+        areas.push([
+            left.floor().clamp(0.0, f64::from(width)) as u32,
+            top.floor().clamp(0.0, f64::from(height)) as u32,
+            right.ceil().clamp(0.0, f64::from(width)) as u32,
+            bottom.ceil().clamp(0.0, f64::from(height)) as u32,
+        ]);
+    }
+    Ok(areas)
+}
+
+fn pending_contents(boxes: &[(DrawnBox, Vec<KoharuLayoutDetection>)]) -> Vec<EntityId> {
+    boxes.iter().map(|(drawn, _)| drawn.content).collect()
 }
 
 fn text_mask(detections: &[KoharuLayoutDetection], size: ImageSize) -> GrayImage {
@@ -1491,7 +1590,7 @@ fn set_text_mask(
             mask.height(),
             ExtendedColorType::L8,
         )?;
-    edit.set_asset(
+    edit.adopt_asset(
         page,
         &AssetRole::new("text-mask")?,
         AssetInput::new(
@@ -2115,9 +2214,9 @@ mod tests {
     use std::sync::Arc;
 
     use koharu_scene::{
-        AssetRole, At, BubbleRegion, EntityId, FitsTo, FlowsIn, Geometry, Inside, Origin,
-        PageDraft, RegionSpec, Session, TextLayout, TextLayoutKind, TextRegion, Typography,
-        WritingMode,
+        AssetInput, AssetMetadata, AssetRole, At, Authored, BubbleRegion, EntityId, FitsTo,
+        FlowsIn, Geometry, Inside, Origin, PageDraft, RecognizedFrom, RegionSpec, Session,
+        SourceText, TextLayout, TextLayoutKind, TextRegion, Translation, Typography, WritingMode,
     };
 
     use super::{
@@ -2326,6 +2425,114 @@ mod tests {
             .to_luma8();
         assert_eq!(mask.get_pixel(50, 50)[0], u8::MAX);
         assert_eq!(mask.get_pixel(80, 80)[0], 0);
+    }
+
+    #[tokio::test]
+    async fn drawn_boxes_overwrite_a_painted_mask_except_under_translated_text() {
+        let mut session = Session::memory().await.unwrap();
+        let mut painted = image::GrayImage::new(100, 100);
+        painted.put_pixel(5, 5, image::Luma([u8::MAX]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageLuma8(painted)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let mut ids = None;
+        let patch = session
+            .snapshot()
+            .patch(|edit| {
+                let page = edit.add_page(PageDraft::new("page", 100.0, 100.0), At::End)?;
+                let region = edit.add_analysis_region::<TextRegion>(
+                    page,
+                    At::End,
+                    &Geometry::rectangle(0.0, 0.0, 30.0, 30.0),
+                    None,
+                )?;
+                let translated =
+                    add_drawn_box(edit, page, Geometry::rectangle(0.0, 0.0, 30.0, 30.0))?;
+                edit.relate::<RecognizedFrom>(translated, region)?;
+                edit.set(
+                    translated,
+                    &SourceText {
+                        text: Authored::user("source".to_owned()),
+                        language: None,
+                    },
+                )?;
+                edit.set(
+                    translated,
+                    &Translation {
+                        text: Authored::user("done".to_owned()),
+                        language: None,
+                    },
+                )?;
+                let drawn = add_drawn_box(edit, page, Geometry::rectangle(20.0, 20.0, 30.0, 30.0))?;
+                edit.set_asset(
+                    page,
+                    &AssetRole::new("text-mask")?,
+                    AssetInput::new(
+                        Arc::<[u8]>::from(bytes.into_inner()),
+                        "image/png",
+                        AssetMetadata {
+                            width: Some(100),
+                            height: Some(100),
+                            attributes: Default::default(),
+                        },
+                    ),
+                )?;
+                ids = Some((page, drawn));
+                Ok(())
+            })
+            .unwrap();
+        let snapshot = session.commit(patch).await.unwrap().snapshot;
+        let (page, drawn) = ids.unwrap();
+        let input = StageInput::new(
+            snapshot,
+            page,
+            None,
+            None,
+            Arc::new(crate::ImageCache::default()),
+            None,
+        );
+        let boxes = drawn_boxes(&input)
+            .unwrap()
+            .into_iter()
+            .map(|candidate| {
+                assert_eq!(candidate.content, drawn);
+                let detection = KoharuLayoutDetection {
+                    label_id: 0,
+                    label: "text".to_owned(),
+                    score: 0.8,
+                    bbox: [22.0, 22.0, 48.0, 48.0],
+                    area: 676,
+                    mask: KoharuLayoutMask {
+                        x: 22,
+                        y: 22,
+                        width: 26,
+                        height: 26,
+                        pixels: vec![u8::MAX; 676],
+                    },
+                };
+                (candidate, vec![detection])
+            })
+            .collect::<Vec<_>>();
+        let image = image::DynamicImage::new_rgb8(100, 100);
+        let generation = generation(super::PRODUCER, super::MODEL_ID).unwrap();
+
+        let patch = build_patch(&input, &image, None, &boxes, &generation)
+            .await
+            .unwrap();
+        let snapshot = session.commit(patch).await.unwrap().snapshot;
+
+        let asset = snapshot
+            .asset(page, &AssetRole::new("text-mask").unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(matches!(asset.origin, Origin::Generated(_)));
+        let mask = image::load_from_memory(&snapshot.read_blob(asset.blob).await.unwrap())
+            .unwrap()
+            .to_luma8();
+        assert_eq!(mask.get_pixel(5, 5)[0], u8::MAX);
+        assert_eq!(mask.get_pixel(25, 25)[0], 0);
+        assert_eq!(mask.get_pixel(40, 40)[0], u8::MAX);
     }
 
     #[test]
@@ -3055,10 +3262,12 @@ mod tests {
     }
 
     #[test]
-    fn text_colors_snap_only_at_luminance_extremes() {
+    fn text_colors_snap_only_near_neutral_extremes() {
         assert_eq!(normalize_text_color([20, 31, 24]), [0, 0, 0]);
         assert_eq!(normalize_text_color([230, 240, 250]), [255, 255, 255]);
-        assert_eq!(normalize_text_color([255, 0, 0]), [0, 0, 0]);
+        assert_eq!(normalize_text_color([255, 0, 0]), [255, 0, 0]);
+        assert_eq!(normalize_text_color([181, 0, 255]), [181, 0, 255]);
+        assert_eq!(normalize_text_color([30, 40, 120]), [30, 40, 120]);
         assert_eq!(normalize_text_color([0, 255, 0]), [0, 255, 0]);
         assert_eq!(normalize_text_color([20, 115, 235]), [20, 115, 235]);
         assert_eq!(normalize_text_color([40, 70, 40]), [0, 0, 0]);
@@ -3141,7 +3350,7 @@ mod tests {
     #[test]
     fn text_region_background_is_not_mistaken_for_the_fill() {
         for (fill, background, expected) in [
-            ([24, 40, 80], [225, 130, 175], [0, 0, 0]),
+            ([24, 40, 80], [225, 130, 175], [24, 40, 80]),
             ([220, 240, 255], [16, 24, 88], [255, 255, 255]),
             ([20, 115, 235], [245, 245, 245], [20, 115, 235]),
         ] {

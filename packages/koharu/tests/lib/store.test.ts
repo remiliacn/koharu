@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { defaultShortcuts, receiveDownload, useKoharuStore } from '@/lib/store'
+import { defaultShortcuts, pipelineStages, receiveDownload, useKoharuStore } from '@/lib/store'
 
 describe('editor state', () => {
   it('retains failed downloads until they are dismissed', () => {
@@ -28,7 +28,7 @@ describe('editor state', () => {
 
   it('saves custom shortcuts and restores them after a restart', async () => {
     useKoharuStore.getState().setShortcut('eraser', 'X')
-    expect(JSON.parse(localStorage.getItem('koharu-shortcuts')!).state).toEqual({
+    expect(JSON.parse(localStorage.getItem('koharu-shortcuts')!).state).toMatchObject({
       shortcuts: { ...defaultShortcuts, eraser: 'x' },
     })
 
@@ -40,6 +40,23 @@ describe('editor state', () => {
     await useKoharuStore.persist.rehydrate()
 
     expect(useKoharuStore.getState().shortcuts).toEqual({ ...defaultShortcuts, eraser: 'x' })
+  })
+
+  it('restores the chosen pipeline stages after a restart', async () => {
+    useKoharuStore.getState().setProcessingStages(['ocr', 'translation'])
+    const saved = localStorage.getItem('koharu-shortcuts')!
+    useKoharuStore.setState({ processingStages: [...pipelineStages] })
+    localStorage.setItem('koharu-shortcuts', saved)
+    await useKoharuStore.persist.rehydrate()
+    expect(useKoharuStore.getState().processingStages).toEqual(['ocr', 'translation'])
+
+    useKoharuStore.setState({ processingStages: [...pipelineStages] })
+    localStorage.setItem(
+      'koharu-shortcuts',
+      JSON.stringify({ state: { processingStages: ['retired'] }, version: 0 }),
+    )
+    await useKoharuStore.persist.rehydrate()
+    expect(useKoharuStore.getState().processingStages).toEqual(pipelineStages)
   })
 
   it('shows the inpaint mask only while the eraser is active', () => {
