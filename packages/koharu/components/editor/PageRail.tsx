@@ -292,6 +292,12 @@ export function PageRail() {
             className='min-h-0 flex-1'
             viewportClassName='px-1.5 py-1.5'
             viewportRef={pageList}
+            onKeyDown={(event) => {
+              if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return
+              if (useKoharuStore.getState().selectedLayers.length > 0) return
+              event.preventDefault()
+              selectPages(visiblePages.map(({ page }) => page.id))
+            }}
           >
             <div className='relative w-full' style={{ height: pageVirtualizer.getTotalSize() }}>
               {pageVirtualizer.getVirtualItems().map((virtualRow) => {

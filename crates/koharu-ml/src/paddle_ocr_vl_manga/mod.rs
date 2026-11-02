@@ -64,6 +64,56 @@ impl PaddleOCRVLManga {
                 ..GenerationOptions::default()
             },
         )?;
-        Ok(generation.text)
+        Ok(decode_xml_entities(&generation.text))
+    }
+}
+
+/// Divergence from upstream, which returns the raw generation: this fine-tune
+/// sometimes writes a literal `&` as `&amp;`, so the five XML entities are
+/// decoded in a single pass and any other `&` passes through.
+fn decode_xml_entities(text: &str) -> String {
+    const ENTITIES: [(&str, char); 5] = [
+        ("&amp;", '&'),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&quot;", '"'),
+        ("&apos;", '\''),
+    ];
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find('&') {
+        output.push_str(&rest[..index]);
+        rest = &rest[index..];
+        match ENTITIES.iter().find(|(entity, _)| rest.starts_with(entity)) {
+            Some((entity, character)) => {
+                output.push(*character);
+                rest = &rest[entity.len()..];
+            }
+            None => {
+                output.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    output.push_str(rest);
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_xml_entities;
+
+    #[test]
+    fn decodes_xml_entities_once() {
+        assert_eq!(decode_xml_entities("Ｒ&amp;D"), "Ｒ&D");
+        assert_eq!(decode_xml_entities("&lt;&quot;Hi&apos;&gt;"), "<\"Hi'>");
+        assert_eq!(decode_xml_entities("&amp;lt;"), "&lt;");
+    }
+
+    #[test]
+    fn keeps_other_ampersands() {
+        assert_eq!(decode_xml_entities("Tom & Jerry"), "Tom & Jerry");
+        assert_eq!(decode_xml_entities("R&D &nbsp; &"), "R&D &nbsp; &");
+        assert_eq!(decode_xml_entities("トム＆ジェリー"), "トム＆ジェリー");
     }
 }

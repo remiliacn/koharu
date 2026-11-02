@@ -716,6 +716,32 @@ describe('greenfield editor', () => {
     expect(deletePages.mock.calls[0]![0]).not.toContain('page-2')
   })
 
+  it('selects every page on Ctrl+A in the rail unless layers are selected', () => {
+    installProject()
+    queryClient.setQueryData(pagesKey, [
+      ...(queryClient.getQueryData<PageSummary[]>(pagesKey) ?? []),
+      ...['page-2', 'page-3'].map((id, index) => ({
+        id,
+        label: `Page ${index + 2}`,
+        size: { width: 1000, height: 1500 },
+        source_asset: null,
+        layer_count: 0,
+      })),
+    ])
+    useKoharuStore.setState({ selectedPages: ['page'], selectedLayers: ['layer'] })
+    render(<PageRail />)
+    const item = screen.getByText('Page 2').closest('article')!
+
+    expect(fireEvent.keyDown(item, { key: 'a', ctrlKey: true })).toBe(true)
+    expect(useKoharuStore.getState().selectedPages).toEqual(['page'])
+
+    act(() => {
+      useKoharuStore.setState({ selectedLayers: [] })
+    })
+    expect(fireEvent.keyDown(item, { key: 'a', ctrlKey: true })).toBe(false)
+    expect(useKoharuStore.getState().selectedPages).toEqual(['page', 'page-2', 'page-3'])
+  })
+
   it('switches tools and applies typography from the contextual inspector', async () => {
     const user = userEvent.setup()
     installProject()

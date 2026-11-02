@@ -289,6 +289,11 @@ impl Model {
         };
         let page = input.page;
         let manual = input.inpainting_mask.is_some();
+        let text_mask = if manual {
+            Some(merge_text_mask(&input, &mask).await?)
+        } else {
+            None
+        };
         let mut edit = if manual {
             input.scene.edit()
         } else {
@@ -364,8 +369,44 @@ impl Model {
                 },
             ),
         )?;
+        if let Some(text_mask) = text_mask {
+            edit.set_asset(page, &AssetRole::new("text-mask")?, text_mask)?;
+        }
         finish(edit)
     }
+}
+
+/// Folds a manual Remove stroke into the page's persistent text mask so the
+/// mask view and later inpainting runs see every region that was removed.
+async fn merge_text_mask(input: &StageInput, stroke: &GrayImage) -> Result<AssetInput> {
+    let mut merged = match input
+        .images
+        .get(&input.scene, input.page, "text-mask")
+        .await?
+    {
+        Some(image) => image.to_luma8(),
+        None => GrayImage::new(stroke.width(), stroke.height()),
+    };
+    ensure!(
+        merged.dimensions() == stroke.dimensions(),
+        "text-mask dimensions do not match page {}",
+        input.page
+    );
+    for (target, source) in merged.iter_mut().zip(stroke.as_raw()) {
+        *target = (*target).max(*source);
+    }
+    let (width, height) = merged.dimensions();
+    let mut bytes = Cursor::new(Vec::new());
+    DynamicImage::ImageLuma8(merged).write_to(&mut bytes, ImageFormat::Png)?;
+    Ok(AssetInput::new(
+        Arc::<[u8]>::from(bytes.into_inner()),
+        "image/png",
+        AssetMetadata {
+            width: Some(width),
+            height: Some(height),
+            attributes: BTreeMap::new(),
+        },
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -951,6 +992,59 @@ mod tests {
         assert_eq!(prepared.mask.get_pixel(3, 4), &Luma([255]));
         assert_eq!(prepared.mask.get_pixel(0, 0), &Luma([0]));
         assert!(prepared.text_mask.pixels().all(|pixel| pixel[0] == 0));
+    }
+
+    #[tokio::test]
+    async fn manual_stroke_merges_into_persistent_text_mask() {
+        let mut session = koharu_scene::Session::memory().await.unwrap();
+        let mut page = None;
+        let mut detected = GrayImage::new(8, 8);
+        detected.put_pixel(1, 1, Luma([255]));
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageLuma8(detected)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        let patch = session
+            .snapshot()
+            .patch(|edit| {
+                let id = edit.add_page(
+                    koharu_scene::PageDraft::new("page", 8.0, 8.0),
+                    koharu_scene::At::End,
+                )?;
+                edit.set_asset(
+                    id,
+                    &AssetRole::new("text-mask")?,
+                    AssetInput::new(
+                        Arc::<[u8]>::from(bytes.into_inner()),
+                        "image/png",
+                        AssetMetadata {
+                            width: Some(8),
+                            height: Some(8),
+                            attributes: BTreeMap::new(),
+                        },
+                    ),
+                )?;
+                page = Some(id);
+                Ok(())
+            })
+            .unwrap();
+        let snapshot = session.commit(patch).await.unwrap().snapshot;
+        let input = StageInput::new(
+            snapshot,
+            page.unwrap(),
+            None,
+            None,
+            Arc::new(crate::ImageCache::default()),
+            None,
+        );
+        let mut stroke = GrayImage::new(8, 8);
+        stroke.put_pixel(5, 6, Luma([255]));
+
+        let merged = merge_text_mask(&input, &stroke).await.unwrap();
+        let merged = image::load_from_memory(&merged.bytes).unwrap().to_luma8();
+        assert_eq!(merged.get_pixel(1, 1), &Luma([255]));
+        assert_eq!(merged.get_pixel(5, 6), &Luma([255]));
+        assert_eq!(merged.get_pixel(0, 0), &Luma([0]));
     }
 
     #[tokio::test]
