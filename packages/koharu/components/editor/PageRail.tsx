@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { observeElementRect, useVirtualizer } from '@tanstack/react-virtual'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import {
   FilePlus2,
   FolderOpen,
@@ -11,7 +12,7 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ResourceMonitor } from '@/components/editor/ResourceMonitor'
@@ -89,6 +90,8 @@ export function PageRail() {
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<PageSummary | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [dropTarget, setDropTarget] = useState(false)
+  const rail = useRef<HTMLElement>(null)
   const normalized = query.trim().toLocaleLowerCase()
   const visiblePages = useMemo(
     () =>
@@ -118,6 +121,49 @@ export function PageRail() {
     },
     [],
   )
+
+  const importDropped = useEffectEvent((paths: string[]) => {
+    if (!importing) importPages({ paths })
+  })
+
+  // The browser drop event carries no file paths, so OS drops arrive as native
+  // drag-drop events in physical pixels; only drops over this panel import.
+  useEffect(() => {
+    const overRail = ({ x, y }: { x: number; y: number }) => {
+      const bounds = rail.current?.getBoundingClientRect()
+      if (!bounds) return false
+      const left = x / window.devicePixelRatio
+      const top = y / window.devicePixelRatio
+      return (
+        left >= bounds.left && left <= bounds.right && top >= bounds.top && top <= bounds.bottom
+      )
+    }
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void getCurrentWebview()
+      .onDragDropEvent(({ payload }) => {
+        if (payload.type === 'leave') {
+          setDropTarget(false)
+          return
+        }
+        const over = overRail(payload.position)
+        if (payload.type === 'drop') {
+          setDropTarget(false)
+          if (over) importDropped(payload.paths)
+          return
+        }
+        setDropTarget(over)
+      })
+      .then((stop) => {
+        if (disposed) stop()
+        else unlisten = stop
+      })
+      .catch(() => undefined)
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
 
   const select = (index: number, additive: boolean, range: boolean) => {
     const page = pages[index]
@@ -237,7 +283,20 @@ export function PageRail() {
 
   return (
     <>
-      <aside className='flex h-full min-h-0 flex-col bg-[var(--surface-sidebar)]'>
+      <aside
+        ref={rail}
+        data-drop-target={dropTarget}
+        className={cn(
+          'flex h-full min-h-0 flex-col bg-[var(--surface-sidebar)]',
+          dropTarget && 'ring-2 ring-primary/60 ring-inset',
+        )}
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes('Files')) event.preventDefault()
+        }}
+        onDrop={(event) => {
+          if (event.dataTransfer.types.includes('Files')) event.preventDefault()
+        }}
+      >
         <header className='flex h-10 shrink-0 items-center px-2.5'>
           <div className='flex min-w-0 items-center gap-2'>
             <h2 className='text-[11px] font-semibold'>{t('navigator.pages')}</h2>

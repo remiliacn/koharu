@@ -36,6 +36,11 @@ vi.mock('@tauri-apps/api/window', () => {
   return { getCurrentWindow: () => window }
 })
 
+vi.mock('@tauri-apps/api/webview', () => {
+  const webview = { onDragDropEvent: vi.fn(async () => () => undefined) }
+  return { getCurrentWebview: () => webview }
+})
+
 class Observer {
   observe() {}
   unobserve() {}

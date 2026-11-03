@@ -1,4 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import {
   act,
   fireEvent,
@@ -740,6 +741,33 @@ describe('greenfield editor', () => {
     })
     expect(fireEvent.keyDown(item, { key: 'a', ctrlKey: true })).toBe(false)
     expect(useKoharuStore.getState().selectedPages).toEqual(['page', 'page-2', 'page-3'])
+  })
+
+  it('imports files dropped onto the page rail only', async () => {
+    installProject()
+    const importPages = vi.spyOn(commands, 'import').mockResolvedValue(null)
+    const { container } = render(<PageRail />)
+    const rail = container.querySelector('aside')!
+    vi.spyOn(rail, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 240, 600))
+    const onDragDropEvent = vi.mocked(getCurrentWebview().onDragDropEvent)
+    await waitFor(() => expect(onDragDropEvent).toHaveBeenCalled())
+    const handler = onDragDropEvent.mock.calls.at(-1)![0]
+    const send = (payload: object) =>
+      act(() => {
+        handler({ event: 'tauri://drag-drop', id: 0, payload } as never)
+      })
+    const paths = ['C:/scans/001.png', 'C:/scans/chapter']
+
+    send({ type: 'enter', paths, position: { x: 100, y: 100 } })
+    expect(rail).toHaveAttribute('data-drop-target', 'true')
+    send({ type: 'over', position: { x: 500, y: 100 } })
+    expect(rail).toHaveAttribute('data-drop-target', 'false')
+    send({ type: 'drop', paths, position: { x: 500, y: 100 } })
+    expect(importPages).not.toHaveBeenCalled()
+
+    send({ type: 'drop', paths, position: { x: 100, y: 100 } })
+    await waitFor(() => expect(importPages).toHaveBeenCalledWith({ paths }))
+    expect(rail).toHaveAttribute('data-drop-target', 'false')
   })
 
   it('switches tools and applies typography from the contextual inspector', async () => {

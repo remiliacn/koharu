@@ -625,6 +625,7 @@ export function CanvasWorkspace() {
       )
         .then((result) => {
           selectLayers([result.layer])
+          setTool('select')
           return refresh(projectKey, pagesKey, pageKey)
         })
         .catch(() => undefined)

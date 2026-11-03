@@ -684,7 +684,9 @@ describe('canvas interaction adapter', () => {
     fireEvent.pointerDown(surface, { button: 0, pointerId: 13, clientX: 30, clientY: 40 })
     fireEvent.pointerUp(surface, { pointerId: 13, clientX: 30, clientY: 40 })
     await waitFor(() => expect(point).toHaveBeenCalledWith({ x: 20, y: 20 }))
+    await waitFor(() => expect(useKoharuStore.getState().tool).toBe('select'))
 
+    act(() => useKoharuStore.setState({ tool: 'text' }))
     fireEvent.pointerDown(surface, { button: 0, pointerId: 14, clientX: 40, clientY: 50 })
     fireEvent.pointerMove(surface, { pointerId: 14, clientX: 140, clientY: 110 })
     fireEvent.pointerUp(surface, { pointerId: 14, clientX: 140, clientY: 110 })
@@ -696,5 +698,6 @@ describe('canvas interaction adapter', () => {
       height: 60,
       angle_degrees: 0,
     })
+    await waitFor(() => expect(useKoharuStore.getState().tool).toBe('select'))
   })
 })

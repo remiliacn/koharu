@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use tauri::{AppHandle, Manager as _, WindowEvent};
-use tauri_runtime_cef::{Cef, CefRuntime};
+use tauri_runtime_cef::{Cef, CefRuntime, WebviewWindowBuilderCefExt as _};
 use tokio::sync::Mutex;
 
 use crate::commands::{
@@ -134,7 +134,11 @@ pub fn run(context: tauri::Context<CefRuntime>) -> Result<()> {
                 .iter()
                 .find(|window| window.label == "main")
                 .context("the main Tauri window configuration is unavailable")?;
+            // CEF only calls the drag handler that captures dropped file paths for
+            // Alloy-style browsers, so the Chrome-style default never emits
+            // Tauri drag-drop events. macOS already uses Alloy.
             let window = tauri::WebviewWindowBuilder::from_config(application, window_config)?
+                .browser_runtime_style(tauri_runtime_cef::RuntimeStyle::Alloy)
                 .build()
                 .context("failed to create the main window")?;
             window.show().context("failed to show the main window")?;

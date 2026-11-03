@@ -42,7 +42,7 @@ export function defaultModel(model: ModelName): PipelineModel {
     case 'aot-inpainting':
       return { model }
     case 'flux2-klein':
-      return { model, prompt: 'Remove the text and reconstruct the background.' }
+      return { model, prompt: 'Remove only the lettering. Keep everything else unchanged, including speech bubbles, their translucency, and the artwork visible through them.' }
     case 'rorem-mixed':
       return { model }
   }

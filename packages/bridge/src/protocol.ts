@@ -56,7 +56,7 @@ export const commands = {
 	commitTransform: (expectedRevision: Revision, elements: TransformFrame[]) => __TAURI_INVOKE<Revision | null>("commit_transform", { expectedRevision, elements }),
 	commitInpaint: (expectedRevision: Revision, points: Point[], diameter: number) => __TAURI_INVOKE<JobId | null>("commit_inpaint", { expectedRevision, points, diameter }),
 	getInpaintMask: (page: EntityId) => __TAURI_INVOKE<CanvasBytes>("get_inpaint_mask", { page }),
-	commitMaskStroke: (expectedRevision: Revision, mode: RasterStrokeMode, points: Point[], diameter: number) => __TAURI_INVOKE<Revision>("commit_mask_stroke", { expectedRevision, mode, points: points.map(i=>i), diameter }),
+	commitMaskStroke: (expectedRevision: Revision, mode: RasterStrokeMode, points: Point[], diameter: number) => __TAURI_INVOKE<Revision>("commit_mask_stroke", { expectedRevision, mode, points, diameter }),
 };
 
 /* Types */
@@ -337,7 +337,9 @@ export type Page = {
 	regions: AnalysisRegion[],
 };
 
-export type PageImportSource = "files" | "folder";
+export type PageImportSource = "files" | "folder" | 
+/**  Files and folders dropped onto the page list. */
+{ paths: string[] };
 
 export type PageSelection = {
 	project: ProjectInfo,

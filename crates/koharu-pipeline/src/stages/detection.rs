@@ -8,7 +8,8 @@ use std::{
 use anyhow::{Context as _, Result, anyhow, bail};
 use async_trait::async_trait;
 use image::{
-    DynamicImage, ExtendedColorType, GrayImage, ImageEncoder as _, Luma, RgbImage,
+    DynamicImage, ExtendedColorType, GrayImage, ImageBuffer, ImageEncoder as _, Luma, Rgb,
+    RgbImage,
     codecs::png::{CompressionType, FilterType, PngEncoder},
 };
 use imageproc::{
@@ -16,6 +17,7 @@ use imageproc::{
     distance_transform::{Norm, distance_transform},
     geometry::{approximate_polygon_dp, arc_length, contour_area},
     morphology::{close, dilate},
+    region_labelling::{Connectivity, connected_components},
 };
 use koharu_ml::koharu_layout_rfdetr_seg_2xl::{
     KoharuLayoutDetection, KoharuLayoutDetections, KoharuLayoutMask, KoharuLayoutRFDetrSeg2XL,
@@ -276,6 +278,7 @@ async fn build_patch(
             input,
             &mut edit,
             page,
+            &image.to_rgb8(),
             &boxed_detections(boxes),
             &pending_contents(boxes),
             size,
@@ -358,6 +361,7 @@ async fn write_page(
         input,
         edit,
         page,
+        &image,
         &detections,
         &pending_contents(boxes),
         size,
@@ -1442,11 +1446,12 @@ async fn write_masks(
     input: &StageInput,
     edit: &mut koharu_scene::Edit,
     page: EntityId,
+    image: &RgbImage,
     detections: &[KoharuLayoutDetection],
     pending: &[EntityId],
     size: ImageSize,
 ) -> Result<()> {
-    write_mask(input, edit, page, detections, pending, size).await?;
+    write_mask(input, edit, page, image, detections, pending, size).await?;
     edit.remove_asset(page, &AssetRole::new("bubble-mask")?)?;
     Ok(())
 }
@@ -1455,11 +1460,12 @@ async fn write_mask(
     input: &StageInput,
     edit: &mut koharu_scene::Edit,
     page: EntityId,
+    image: &RgbImage,
     detections: &[KoharuLayoutDetection],
     pending: &[EntityId],
     size: ImageSize,
 ) -> Result<()> {
-    let mut mask = text_mask(detections, size);
+    let mut mask = text_mask(image, detections, size);
     if let Some(bounds) = input.region {
         preserve_mask_outside_region(input, page, "text-mask", bounds, &mut mask).await?;
     }
@@ -1471,6 +1477,7 @@ async fn merge_text_mask(
     input: &StageInput,
     edit: &mut koharu_scene::Edit,
     page: EntityId,
+    image: &RgbImage,
     detections: &[KoharuLayoutDetection],
     pending: &[EntityId],
     size: ImageSize,
@@ -1478,7 +1485,7 @@ async fn merge_text_mask(
     if detections.is_empty() {
         return Ok(());
     }
-    let mut mask = text_mask(detections, size);
+    let mut mask = text_mask(image, detections, size);
     if let Some(existing) = input.images.get(&input.scene, page, "text-mask").await? {
         let existing = existing.to_luma8();
         if existing.dimensions() != mask.dimensions() {
@@ -1565,15 +1572,212 @@ fn pending_contents(boxes: &[(DrawnBox, Vec<KoharuLayoutDetection>)]) -> Vec<Ent
     boxes.iter().map(|(drawn, _)| drawn.content).collect()
 }
 
-fn text_mask(detections: &[KoharuLayoutDetection], size: ImageSize) -> GrayImage {
+fn text_mask(image: &RgbImage, detections: &[KoharuLayoutDetection], size: ImageSize) -> GrayImage {
     if size.width > 0 && size.height > 0 {
         let radius = ((size.width.max(size.height) as f32 / 1024.0) * 6.0)
             .round()
             .clamp(1.0, 255.0) as u8;
-        closed_mask_for(detections, "text", size, radius)
+        let mut mask = closed_mask_for(detections, "text", size, radius);
+        if image.dimensions() == (size.width, size.height) {
+            grow_into_outlines(image, &mut mask, radius);
+        }
+        mask
     } else {
         mask_for(detections, "text", size)
     }
+}
+
+const OUTLINE_COLOR_TOLERANCE: u8 = 32;
+const OUTLINE_FRINGE: u8 = 2;
+const OUTLINE_MIN_BORDER_PIXELS: usize = 32;
+const OUTLINE_MIN_BORDER_SHARE: f64 = 0.25;
+/// A grown region is rejected once its pixels at the reach limit reach a
+/// quarter of its pixels next to the mask.
+const OUTLINE_MAX_LIMIT_CONTACT: usize = 4;
+
+// Segmentation covers the glyphs and the inner part of a thick outline, and the
+// dilation does not reach a stroke wider than its radius, so the outer stroke
+// would survive inpainting. When one color dominates a text component's border
+// band, the mask grows over connected pixels of that color and their
+// anti-aliased edge, up to twice the dilation radius.
+fn grow_into_outlines(image: &RgbImage, mask: &mut GrayImage, radius: u8) {
+    let binary = GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
+        Luma([if mask.get_pixel(x, y)[0] >= 127 {
+            u8::MAX
+        } else {
+            0
+        }])
+    });
+    let labels = connected_components(&binary, Connectivity::Eight, Luma([0]));
+    let mut bounds = Vec::<Option<[u32; 4]>>::new();
+    for (x, y, pixel) in labels.enumerate_pixels() {
+        let label = pixel[0] as usize;
+        if label == 0 {
+            continue;
+        }
+        if label >= bounds.len() {
+            bounds.resize(label + 1, None);
+        }
+        let bounds = bounds[label].get_or_insert([x, y, x + 1, y + 1]);
+        bounds[0] = bounds[0].min(x);
+        bounds[1] = bounds[1].min(y);
+        bounds[2] = bounds[2].max(x + 1);
+        bounds[3] = bounds[3].max(y + 1);
+    }
+    let grown = bounds
+        .into_iter()
+        .enumerate()
+        .filter_map(|(label, bounds)| Some((label as u32, bounds?)))
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .filter_map(|(label, bounds)| outline_growth(image, &labels, label, bounds, radius))
+        .collect::<Vec<_>>();
+    for (left, top, growth) in grown {
+        for (x, y, pixel) in growth.enumerate_pixels() {
+            if pixel[0] != 0 {
+                mask.put_pixel(left + x, top + y, Luma([u8::MAX]));
+            }
+        }
+    }
+}
+
+fn outline_growth(
+    image: &RgbImage,
+    labels: &ImageBuffer<Luma<u32>, Vec<u32>>,
+    label: u32,
+    [
+        component_left,
+        component_top,
+        component_right,
+        component_bottom,
+    ]: [u32; 4],
+    radius: u8,
+) -> Option<(u32, u32, GrayImage)> {
+    let reach = u32::from(radius) * 2;
+    let margin = reach + 1;
+    let left = component_left.saturating_sub(margin);
+    let top = component_top.saturating_sub(margin);
+    let width = component_right.saturating_add(margin).min(image.width()) - left;
+    let height = component_bottom.saturating_add(margin).min(image.height()) - top;
+    let component = GrayImage::from_fn(width, height, |x, y| {
+        Luma([if labels.get_pixel(left + x, top + y)[0] == label {
+            u8::MAX
+        } else {
+            0
+        }])
+    });
+    let outside = distance_transform(&component, Norm::LInf);
+    let mut inverted = component.clone();
+    inverted
+        .iter_mut()
+        .for_each(|value| *value = u8::MAX - *value);
+    let inside = distance_transform(&inverted, Norm::LInf);
+    let pixel = |x: u32, y: u32| *image.get_pixel(left + x, top + y);
+
+    let border = inside
+        .enumerate_pixels()
+        .filter(|(_, _, depth)| depth[0] != 0 && depth[0] <= radius)
+        .map(|(x, y, _)| pixel(x, y))
+        .collect::<Vec<_>>();
+    if border.len() < OUTLINE_MIN_BORDER_PIXELS {
+        return None;
+    }
+    let bin = |color: &Rgb<u8>| {
+        (usize::from(color[0] >> 4) << 8)
+            | (usize::from(color[1] >> 4) << 4)
+            | usize::from(color[2] >> 4)
+    };
+    let mut counts = vec![0_usize; 1 << 12];
+    for color in &border {
+        counts[bin(color)] += 1;
+    }
+    let dominant = (0..counts.len()).max_by_key(|index| counts[*index])?;
+    let members = border
+        .iter()
+        .filter(|color| bin(color) == dominant)
+        .collect::<Vec<_>>();
+    let stroke = Rgb(std::array::from_fn(|channel| {
+        (members
+            .iter()
+            .map(|color| usize::from(color[channel]))
+            .sum::<usize>()
+            / members.len()) as u8
+    }));
+    let matches = |color: &Rgb<u8>| {
+        (0..3).all(|channel| color[channel].abs_diff(stroke[channel]) <= OUTLINE_COLOR_TOLERANCE)
+    };
+    let border_share =
+        border.iter().filter(|color| matches(color)).count() as f64 / border.len() as f64;
+    if border_share < OUTLINE_MIN_BORDER_SHARE {
+        return None;
+    }
+
+    let mut grown = GrayImage::new(width, height);
+    let mut queue = VecDeque::new();
+    for (x, y, distance) in outside.enumerate_pixels() {
+        if distance[0] == 1 && matches(&pixel(x, y)) {
+            grown.put_pixel(x, y, Luma([u8::MAX]));
+            queue.push_back((x, y));
+        }
+    }
+    if queue.is_empty() {
+        return None;
+    }
+    while let Some((x, y)) = queue.pop_front() {
+        for (dx, dy) in [
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        ] {
+            let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy)) else {
+                continue;
+            };
+            if nx >= width || ny >= height || grown.get_pixel(nx, ny)[0] != 0 {
+                continue;
+            }
+            let distance = u32::from(outside.get_pixel(nx, ny)[0]);
+            if distance == 0 || distance > reach || !matches(&pixel(nx, ny)) {
+                continue;
+            }
+            grown.put_pixel(nx, ny, Luma([u8::MAX]));
+            queue.push_back((nx, ny));
+        }
+    }
+
+    // A stroke ends before the reach limit. A flood that keeps running into the
+    // limit is a background of the stroke's color, not part of the lettering.
+    let regions = connected_components(&grown, Connectivity::Eight, Luma([0]));
+    let mut contacts = Vec::<(usize, usize)>::new();
+    for (x, y, region) in regions.enumerate_pixels() {
+        let region = region[0] as usize;
+        if region == 0 {
+            continue;
+        }
+        if region >= contacts.len() {
+            contacts.resize(region + 1, (0, 0));
+        }
+        match u32::from(outside.get_pixel(x, y)[0]) {
+            1 => contacts[region].0 += 1,
+            distance if distance == reach => contacts[region].1 += 1,
+            _ => {}
+        }
+    }
+    let mut accepted = false;
+    for (x, y, region) in regions.enumerate_pixels() {
+        let (seeds, limit) = contacts
+            .get(region[0] as usize)
+            .copied()
+            .unwrap_or_default();
+        let keep = region[0] != 0 && limit * OUTLINE_MAX_LIMIT_CONTACT < seeds;
+        accepted |= keep;
+        grown.put_pixel(x, y, Luma([if keep { u8::MAX } else { 0 }]));
+    }
+    accepted.then(|| (left, top, dilate(&grown, Norm::LInf, OUTLINE_FRINGE)))
 }
 
 fn set_text_mask(
@@ -2205,7 +2409,7 @@ fn area(bounds: [f32; 4]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use image::{Rgb, RgbImage};
+    use image::{GrayImage, Luma, Rgb, RgbImage};
     use imageproc::{
         distance_transform::Norm,
         morphology::{close, dilate},
@@ -2223,9 +2427,9 @@ mod tests {
         DIALOGUE_MASK_CONTAINMENT_THRESHOLD, DetectedRegion, DetectedText, DetectionModel,
         ImageSize, KoharuLayoutRFDetrSeg2XLConfig, MaskPixel, PageRegions, Processor, RegionOutput,
         StageInput, StageProcessor, build_patch, closed_mask_for, color_palette, drawn_boxes,
-        drawn_text, generation, infer_typography, layout_order, link_dialogue_regions,
-        mask_containment, mask_for, mask_geometry, non_maximum_suppression, normalize_text_color,
-        write_region,
+        drawn_text, generation, grow_into_outlines, infer_typography, layout_order,
+        link_dialogue_regions, mask_containment, mask_for, mask_geometry, non_maximum_suppression,
+        normalize_text_color, write_region,
     };
 
     #[test]
@@ -3086,6 +3290,56 @@ mod tests {
         let expected = close(&dilate(&page, Norm::L2, radius), Norm::L2, radius);
 
         assert_eq!(closed_mask_for(&detections, "text", size, radius), expected);
+    }
+
+    fn square_mask(size: u32, [left, top, right, bottom]: [u32; 4]) -> GrayImage {
+        GrayImage::from_fn(size, size, |x, y| {
+            Luma([
+                if (left..right).contains(&x) && (top..bottom).contains(&y) {
+                    u8::MAX
+                } else {
+                    0
+                },
+            ])
+        })
+    }
+
+    #[test]
+    fn text_mask_grows_over_an_outline_wider_than_the_dilation() {
+        let image = RgbImage::from_fn(80, 80, |x, y| {
+            if (28..52).contains(&x) && (28..52).contains(&y) {
+                Rgb([255, 40, 170])
+            } else if (20..60).contains(&x) && (20..60).contains(&y) {
+                Rgb([255, 255, 255])
+            } else {
+                Rgb([40, 40, 80])
+            }
+        });
+        let mut mask = square_mask(80, [25, 25, 55, 55]);
+
+        grow_into_outlines(&image, &mut mask, 3);
+
+        assert_eq!(mask.get_pixel(20, 40)[0], u8::MAX);
+        assert_eq!(mask.get_pixel(59, 59)[0], u8::MAX);
+        assert_eq!(mask.get_pixel(61, 40)[0], u8::MAX, "anti-aliased edge");
+        assert_eq!(mask.get_pixel(70, 40)[0], 0);
+    }
+
+    #[test]
+    fn text_mask_does_not_grow_into_a_background_of_the_border_color() {
+        let image = RgbImage::from_fn(80, 80, |x, y| {
+            if (30..50).contains(&x) && (30..50).contains(&y) {
+                Rgb([0, 0, 0])
+            } else {
+                Rgb([255, 255, 255])
+            }
+        });
+        let mut mask = square_mask(80, [27, 27, 53, 53]);
+        let expected = mask.clone();
+
+        grow_into_outlines(&image, &mut mask, 3);
+
+        assert_eq!(mask, expected);
     }
 
     #[test]

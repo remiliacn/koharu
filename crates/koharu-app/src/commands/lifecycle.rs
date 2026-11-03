@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context as _, Result};
 use koharu_desktop::{CanvasState, Desktop};
 use koharu_scene::{AssetInput, AssetMetadata, AssetRole, At, PageDraft};
@@ -34,11 +36,13 @@ pub struct PageSelection {
     pub page: Page,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Type)]
+#[derive(Clone, Debug, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum PageImportSource {
     Files,
     Folder,
+    /// Files and folders dropped onto the page list.
+    Paths(Vec<PathBuf>),
 }
 
 pub(crate) struct Initialization {
@@ -345,40 +349,7 @@ pub(crate) async fn import(
     if !processing.stops.lock().is_empty() {
         return Err(anyhow::anyhow!("pages cannot be imported while processing is running").into());
     }
-    let extensions = import::Format::iter()
-        .flat_map(|format| format.get_serializations())
-        .collect::<Vec<_>>();
-    let dialog = rfd::AsyncFileDialog::new()
-        .add_filter("Images, archives, and PDF", &extensions)
-        .set_parent(&window);
-    let files = match source {
-        PageImportSource::Files => dialog.pick_files().await.map(|files| {
-            files
-                .into_iter()
-                .map(|file| file.path().to_owned())
-                .collect::<Vec<_>>()
-        }),
-        PageImportSource::Folder => dialog.pick_folder().await.map(|folder| {
-            WalkDir::new(folder.path())
-                .follow_links(false)
-                .into_iter()
-                .filter_map(|entry| match entry {
-                    Ok(entry) if entry.file_type().is_file() => Some(entry.into_path()),
-                    Ok(_) => None,
-                    Err(error) => {
-                        tracing::warn!(%error, "could not inspect an import directory entry");
-                        None
-                    }
-                })
-                .filter(|path| {
-                    path.extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| extension.parse::<import::Format>().is_ok())
-                })
-                .collect::<Vec<_>>()
-        }),
-    };
-    let Some(files) = files else {
+    let Some(files) = import_files(source, &window).await else {
         return Ok(());
     };
     if files.is_empty() {
@@ -426,6 +397,67 @@ pub(crate) async fn import(
     let canvas = desktop.canvas_state();
     canvas_channel.channel.publish(canvas);
     Ok(())
+}
+
+/// Resolves an import source to the files to import, or `None` when a dialog was canceled.
+async fn import_files(
+    source: PageImportSource,
+    window: &WebviewWindow<CefRuntime>,
+) -> Option<Vec<PathBuf>> {
+    let extensions = import::Format::iter()
+        .flat_map(|format| format.get_serializations())
+        .collect::<Vec<_>>();
+    let dialog = rfd::AsyncFileDialog::new()
+        .add_filter("Images, archives, and PDF", &extensions)
+        .set_parent(window);
+    match source {
+        PageImportSource::Files => dialog.pick_files().await.map(|files| {
+            files
+                .into_iter()
+                .map(|file| file.path().to_owned())
+                .collect()
+        }),
+        PageImportSource::Folder => dialog
+            .pick_folder()
+            .await
+            .map(|folder| supported_files_in(folder.path())),
+        PageImportSource::Paths(paths) => Some(
+            paths
+                .into_iter()
+                .flat_map(|path| {
+                    if path.is_dir() {
+                        supported_files_in(&path)
+                    } else if supported_file(&path) {
+                        vec![path]
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .collect(),
+        ),
+    }
+}
+
+fn supported_files_in(folder: &Path) -> Vec<PathBuf> {
+    WalkDir::new(folder)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Ok(entry) if entry.file_type().is_file() => Some(entry.into_path()),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(%error, "could not inspect an import directory entry");
+                None
+            }
+        })
+        .filter(|path| supported_file(path))
+        .collect()
+}
+
+fn supported_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.parse::<import::Format>().is_ok())
 }
 
 #[tauri::command]

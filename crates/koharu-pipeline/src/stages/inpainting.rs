@@ -10,7 +10,11 @@ use image::{
     DynamicImage, GenericImageView as _, GrayImage, ImageBuffer, ImageFormat, Luma, Rgb, RgbImage,
     Rgba, RgbaImage,
 };
-use imageproc::region_labelling::{Connectivity, connected_components};
+use imageproc::{
+    distance_transform::Norm,
+    morphology::dilate,
+    region_labelling::{Connectivity, connected_components},
+};
 use koharu_ml::{
     aot_inpainting::AotInpainting,
     flux2_klein::{Flux2KleinInpaint, Flux2KleinInpaintOptions},
@@ -38,7 +42,7 @@ pub struct Flux2KleinConfig {
 impl Default for Flux2KleinConfig {
     fn default() -> Self {
         Self {
-            prompt: "Remove the text and reconstruct the background.".to_owned(),
+            prompt: "Remove only the lettering. Keep everything else unchanged, including speech bubbles, their translucency, and the artwork visible through them.".to_owned(),
         }
     }
 }
@@ -183,12 +187,12 @@ impl Model {
         let original = prepared.original.clone();
         let cleanup = prepared.cleanup.take();
         let cleanup_entity = prepared.cleanup_entity;
-        let (model_name, image) = match self {
+        let (model_name, (image, cleaned)) = match self {
             Self::LaMa(model) => {
                 let model = model.clone();
                 (
                     "lama",
-                    tokio_rayon::spawn(move || -> Result<DynamicImage> {
+                    tokio_rayon::spawn(move || -> Result<(DynamicImage, GrayImage)> {
                         let model = model
                             .lock()
                             .map_err(|_| anyhow!("LaMa model lock is poisoned"))?;
@@ -213,7 +217,7 @@ impl Model {
                 let model = model.clone();
                 (
                     "aot-inpainting",
-                    tokio_rayon::spawn(move || -> Result<DynamicImage> {
+                    tokio_rayon::spawn(move || -> Result<(DynamicImage, GrayImage)> {
                         let model = model
                             .lock()
                             .map_err(|_| anyhow!("AOT model lock is poisoned"))?;
@@ -235,7 +239,7 @@ impl Model {
                 let config = config.clone();
                 (
                     "flux2-klein",
-                    tokio_rayon::spawn(move || -> Result<DynamicImage> {
+                    tokio_rayon::spawn(move || -> Result<(DynamicImage, GrayImage)> {
                         let model = model
                             .lock()
                             .map_err(|_| anyhow!("FLUX model lock is poisoned"))?;
@@ -263,7 +267,7 @@ impl Model {
                 let config = config.clone();
                 (
                     "rorem-mixed",
-                    tokio_rayon::spawn(move || -> Result<DynamicImage> {
+                    tokio_rayon::spawn(move || -> Result<(DynamicImage, GrayImage)> {
                         let model = model
                             .lock()
                             .map_err(|_| anyhow!("RORem model lock is poisoned"))?;
@@ -314,7 +318,7 @@ impl Model {
             RgbaImage::new(image.width(), image.height())
         };
         for (x, y, target) in overlay.enumerate_pixels_mut() {
-            if mask.get_pixel(x, y)[0] < 127 {
+            if cleaned.get_pixel(x, y)[0] < 127 {
                 continue;
             }
             let generated = image.get_pixel(x, y);
@@ -587,7 +591,7 @@ fn inpaint_tiled(
     text_mask: &GrayImage,
     flat_fill_regions: &[FlatFillRegion],
     mut inference: impl FnMut(&DynamicImage, &GrayImage) -> Result<DynamicImage>,
-) -> Result<DynamicImage> {
+) -> Result<(DynamicImage, GrayImage)> {
     ensure!(
         image.dimensions() == mask.dimensions() && mask.dimensions() == text_mask.dimensions(),
         "image and mask dimensions differ: image={:?}, mask={:?}, text_mask={:?}",
@@ -598,7 +602,14 @@ fn inpaint_tiled(
 
     let mut output = image.to_rgb8();
     let mut pending_mask = mask.clone();
-    fill_uniform_regions(&mut output, &mut pending_mask, text_mask, flat_fill_regions);
+    let mut cleaned = mask.clone();
+    fill_uniform_regions(
+        &mut output,
+        &mut pending_mask,
+        &mut cleaned,
+        text_mask,
+        flat_fill_regions,
+    );
     let (component_labels, tiles) = inpaint_tiles(&pending_mask);
     for tile in &tiles {
         let [left, top, right, bottom] = tile.crop;
@@ -622,37 +633,60 @@ fn inpaint_tiled(
         };
         composite_generated(&mut output, &component_labels, tile, &generated);
     }
-    Ok(DynamicImage::ImageRgb8(output))
+    Ok((DynamicImage::ImageRgb8(output), cleaned))
 }
 
 fn fill_uniform_regions(
     output: &mut RgbImage,
     pending_mask: &mut GrayImage,
+    cleaned: &mut GrayImage,
     text_mask: &GrayImage,
     regions: &[FlatFillRegion],
 ) {
+    // Anti-aliased lettering and its outline bleed past the detected text mask.
+    // A balloon that passed the uniformity check can absorb that fringe too.
+    let fringe = ((output.width().max(output.height()) as f32 / 1024.0) * 2.0)
+        .round()
+        .clamp(2.0, 255.0) as u8;
     for region in regions {
         let [left, top, right, bottom] = region.bounds;
-        let mut targets = Vec::new();
+        let mut text = GrayImage::new(right - left, bottom - top);
+        let mut has_text = false;
         for y in top..bottom {
             for x in left..right {
                 if pending_mask.get_pixel(x, y)[0] >= 127
                     && text_mask.get_pixel(x, y)[0] >= 127
                     && point_in_polygon((x as f32 + 0.5, y as f32 + 0.5), &region.polygon)
                 {
-                    targets.push((x, y));
+                    text.put_pixel(x - left, y - top, Luma([u8::MAX]));
+                    has_text = true;
                 }
             }
         }
-        if targets.is_empty() {
+        if !has_text {
             continue;
         }
-        let Some(color) = uniform_region_color(output, pending_mask, region) else {
+        let covered = dilate(&text, Norm::LInf, fringe);
+        let Some(fill) = uniform_region_fill(output, pending_mask, &covered, region) else {
             continue;
         };
-        for (x, y) in targets {
-            output.put_pixel(x, y, color);
-            pending_mask.put_pixel(x, y, Luma([0]));
+        for (x, y, pixel) in covered.enumerate_pixels() {
+            if pixel[0] < 127 {
+                continue;
+            }
+            let (page_x, page_y) = (left + x, top + y);
+            let point = (page_x as f32 + 0.5, page_y as f32 + 0.5);
+            if text.get_pixel(x, y)[0] < 127
+                && (pending_mask.get_pixel(page_x, page_y)[0] >= 127
+                    || !point_in_polygon(point, &region.polygon)
+                    || polygon_edge_distance_squared(point, &region.polygon)
+                        < FLAT_FILL_EDGE_MARGIN * FLAT_FILL_EDGE_MARGIN)
+            {
+                continue;
+            }
+            output.put_pixel(page_x, page_y, fill.color_at(page_x, page_y));
+            pending_mask.put_pixel(page_x, page_y, Luma([0]));
+            cleaned.put_pixel(page_x, page_y, Luma([u8::MAX]));
         }
     }
 }
@@ -808,36 +842,100 @@ fn crop_tile_mask(mask: &GrayImage, tile: &InpaintTile) -> GrayImage {
     crop
 }
 
-fn uniform_region_color(
+/// A per-channel plane `mean + slope_x * dx + slope_y * dy` around the centroid
+/// of the samples it was fitted to.
+#[derive(Clone, Copy, Debug)]
+struct PlaneFill {
+    center: (f64, f64),
+    channels: [[f64; 3]; 3],
+}
+
+impl PlaneFill {
+    fn value(&self, channel: usize, x: u32, y: u32) -> f64 {
+        let [mean, slope_x, slope_y] = self.channels[channel];
+        mean + slope_x * (f64::from(x) - self.center.0) + slope_y * (f64::from(y) - self.center.1)
+    }
+
+    fn color_at(&self, x: u32, y: u32) -> Rgb<u8> {
+        Rgb(std::array::from_fn(|channel| {
+            self.value(channel, x, y).round().clamp(0.0, 255.0) as u8
+        }))
+    }
+}
+
+// BallonsTranslator fills a uniform balloon with its median color. Koharu fits a
+// least-squares plane instead, so a balloon with a tone gradient is filled
+// without a flat seam, and judges uniformity by the residual from that plane.
+fn uniform_region_fill(
     image: &RgbImage,
     mask: &GrayImage,
+    covered: &GrayImage,
     region: &FlatFillRegion,
-) -> Option<Rgb<u8>> {
+) -> Option<PlaneFill> {
     let [left, top, right, bottom] = region.bounds;
-    let mut channels = [Vec::new(), Vec::new(), Vec::new()];
+    let mut samples = Vec::new();
     for y in top..bottom {
         for x in left..right {
             let point = (x as f32 + 0.5, y as f32 + 0.5);
             if mask.get_pixel(x, y)[0] >= 127
+                || covered.get_pixel(x - left, y - top)[0] >= 127
                 || !point_in_polygon(point, &region.polygon)
                 || polygon_edge_distance_squared(point, &region.polygon)
                     < FLAT_FILL_EDGE_MARGIN * FLAT_FILL_EDGE_MARGIN
             {
                 continue;
             }
-            let pixel = image.get_pixel(x, y);
-            for channel in 0..3 {
-                channels[channel].push(pixel[channel]);
-            }
+            samples.push((x, y, *image.get_pixel(x, y)));
         }
     }
-    if channels[0].len() < UNIFORM_BACKGROUND_MIN_PIXELS {
+    if samples.len() < UNIFORM_BACKGROUND_MIN_PIXELS {
         return None;
     }
 
-    let medians = channels.each_mut().map(|values| median(values));
+    let count = samples.len() as f64;
+    let center = (
+        samples.iter().map(|(x, _, _)| f64::from(*x)).sum::<f64>() / count,
+        samples.iter().map(|(_, y, _)| f64::from(*y)).sum::<f64>() / count,
+    );
+    let (mut xx, mut xy, mut yy) = (0.0, 0.0, 0.0);
+    for &(x, y, _) in &samples {
+        let (dx, dy) = (f64::from(x) - center.0, f64::from(y) - center.1);
+        xx += dx * dx;
+        xy += dx * dy;
+        yy += dy * dy;
+    }
+    let determinant = xx * yy - xy * xy;
+    let channels = std::array::from_fn(|channel| {
+        let mean = samples
+            .iter()
+            .map(|(_, _, pixel)| f64::from(pixel[channel]))
+            .sum::<f64>()
+            / count;
+        // Collinear samples cannot constrain a slope across the line.
+        if determinant <= 1e-9 * xx * yy {
+            return [mean, 0.0, 0.0];
+        }
+        let (mut xv, mut yv) = (0.0, 0.0);
+        for &(x, y, pixel) in &samples {
+            let value = f64::from(pixel[channel]) - mean;
+            xv += (f64::from(x) - center.0) * value;
+            yv += (f64::from(y) - center.1) * value;
+        }
+        [
+            mean,
+            (xv * yy - yv * xy) / determinant,
+            (yv * xx - xv * xy) / determinant,
+        ]
+    });
+    let fill = PlaneFill { center, channels };
+
     let deviations = std::array::from_fn::<_, 3, _>(|channel| {
-        standard_deviation(&channels[channel], f64::from(medians[channel]))
+        (samples
+            .iter()
+            .map(|&(x, y, pixel)| (f64::from(pixel[channel]) - fill.value(channel, x, y)).powi(2))
+            .sum::<f64>()
+            / count)
+            .sqrt()
     });
     let mean_deviation = deviations.iter().sum::<f64>() / deviations.len() as f64;
     let channel_spread = (deviations
@@ -847,7 +945,7 @@ fn uniform_region_color(
         / deviations.len() as f64)
         .sqrt();
     let threshold = if channel_spread > 1.0 { 7.0 } else { 10.0 };
-    (deviations.iter().copied().fold(0.0, f64::max) < threshold).then_some(Rgb(medians))
+    (deviations.iter().copied().fold(0.0, f64::max) < threshold).then_some(fill)
 }
 
 fn point_in_polygon(point: (f32, f32), polygon: &[(f32, f32)]) -> bool {
@@ -889,25 +987,6 @@ fn polygon_edge_distance_squared(point: (f32, f32), polygon: &[(f32, f32)]) -> f
         start = end;
     }
     minimum
-}
-
-fn median(values: &mut [u8]) -> u8 {
-    values.sort_unstable();
-    let middle = values.len() / 2;
-    if values.len().is_multiple_of(2) {
-        ((u16::from(values[middle - 1]) + u16::from(values[middle])) / 2) as u8
-    } else {
-        values[middle]
-    }
-}
-
-fn standard_deviation(values: &[u8], center: f64) -> f64 {
-    (values
-        .iter()
-        .map(|value| (f64::from(*value) - center).powi(2))
-        .sum::<f64>()
-        / values.len() as f64)
-        .sqrt()
 }
 
 fn composite_generated(
@@ -1146,6 +1225,7 @@ mod tests {
             },
         )
         .unwrap()
+        .0
         .to_rgb8();
 
         assert_eq!(calls, 0);
@@ -1197,11 +1277,97 @@ mod tests {
             },
         )
         .unwrap()
+        .0
         .to_rgb8();
 
         assert_eq!(calls, 0);
         assert_eq!(output.get_pixel(45, 50), &Rgb([245, 245, 245]));
         assert_eq!(output.get_pixel(150, 50), &Rgb([250, 240, 220]));
+    }
+
+    #[test]
+    fn uniform_fill_covers_the_lettering_fringe_outside_the_mask() {
+        let mut image = RgbImage::from_pixel(96, 96, Rgb([200, 200, 200]));
+        let mut mask = GrayImage::new(96, 96);
+        for y in 39..57 {
+            for x in 31..65 {
+                image.put_pixel(x, y, Rgb([240, 240, 240]));
+            }
+        }
+        for y in 40..56 {
+            for x in 32..64 {
+                image.put_pixel(x, y, Rgb([20, 20, 20]));
+                mask.put_pixel(x, y, Luma([u8::MAX]));
+            }
+        }
+
+        let (output, cleaned) = inpaint_tiled(
+            &DynamicImage::ImageRgb8(image),
+            &mask,
+            &mask,
+            &[rectangle_region([0, 0, 96, 96])],
+            |_, _| unreachable!("a uniform bubble needs no inference"),
+        )
+        .unwrap();
+        let output = output.to_rgb8();
+
+        assert_eq!(output.get_pixel(31, 48), &Rgb([200, 200, 200]));
+        assert_eq!(output.get_pixel(48, 39), &Rgb([200, 200, 200]));
+        assert_eq!(cleaned.get_pixel(31, 48), &Luma([u8::MAX]));
+        assert_eq!(cleaned.get_pixel(20, 48), &Luma([0]));
+    }
+
+    #[test]
+    fn gradient_bubble_is_filled_with_its_gradient_and_textured_bubble_is_inferred() {
+        let mut image = RgbImage::new(200, 100);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            let tone = (120 + x / 4) as u8;
+            *pixel = if x >= 100 && (x + y).is_multiple_of(2) {
+                Rgb([tone - 40, tone - 40, tone - 40])
+            } else {
+                Rgb([tone, tone, tone])
+            };
+        }
+        let mut mask = GrayImage::new(200, 100);
+        for y in 40..60 {
+            for x in (30..60).chain(135..165) {
+                image.put_pixel(x, y, Rgb([10, 10, 10]));
+                mask.put_pixel(x, y, Luma([u8::MAX]));
+            }
+        }
+        let mut calls = 0;
+
+        let output = inpaint_tiled(
+            &DynamicImage::ImageRgb8(image),
+            &mask,
+            &mask,
+            &[
+                rectangle_region([10, 10, 90, 90]),
+                rectangle_region([110, 10, 190, 90]),
+            ],
+            |tile, _| {
+                calls += 1;
+                Ok(DynamicImage::ImageRgb8(RgbImage::from_pixel(
+                    tile.width(),
+                    tile.height(),
+                    Rgb([1, 2, 3]),
+                )))
+            },
+        )
+        .unwrap()
+        .0
+        .to_rgb8();
+
+        assert_eq!(calls, 1);
+        for x in [30, 45, 59] {
+            let expected = (120 + x / 4) as i16;
+            let actual = i16::from(output.get_pixel(x, 50)[0]);
+            assert!(
+                (actual - expected).abs() <= 1,
+                "x={x}: {actual} != {expected}"
+            );
+        }
+        assert_eq!(output.get_pixel(150, 50), &Rgb([1, 2, 3]));
     }
 
     #[test]
@@ -1234,6 +1400,7 @@ mod tests {
             },
         )
         .unwrap()
+        .0
         .to_rgb8();
 
         assert_eq!(calls, 1);
@@ -1308,6 +1475,7 @@ mod tests {
             },
         )
         .unwrap()
+        .0
         .to_rgb8();
 
         assert_eq!(calls, 2);

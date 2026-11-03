@@ -143,7 +143,7 @@ function ModelOptions({
       return (
         <TextField
           label={t('settings.pipeline.options.prompt')}
-          value={model.prompt ?? 'Remove the text and reconstruct the background.'}
+          value={model.prompt ?? 'Remove only the lettering. Keep everything else unchanged, including speech bubbles, their translucency, and the artwork visible through them.'}
           onChange={(prompt) => onChange({ ...model, prompt })}
         />
       )
