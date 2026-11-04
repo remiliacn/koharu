@@ -441,26 +441,27 @@ impl Project {
             )?;
             layer = Some(added_layer);
             edit.set(added_layer, &geometry)?;
-            edit.set(
-                added_layer,
-                &SceneTypography {
-                    origin: Origin::User,
-                    preferred_font: None,
-                    font_weight: None,
-                    font_style: None,
-                    size: None,
-                    auto_fit: true,
-                    color: None,
-                    stroke_color: None,
-                    stroke_width: None,
-                    alignment: match kind {
-                        TextLayoutKind::Point => Some(koharu_scene::TextAlignment::Start),
-                        TextLayoutKind::Paragraph => None,
+            // A drawn paragraph box starts unstyled so detection can fill in the paint it
+            // measures; the pipeline cannot overwrite a user-owned typography.
+            if kind == TextLayoutKind::Point {
+                edit.set(
+                    added_layer,
+                    &SceneTypography {
+                        origin: Origin::User,
+                        preferred_font: None,
+                        font_weight: None,
+                        font_style: None,
+                        size: None,
+                        auto_fit: true,
+                        color: None,
+                        stroke_color: None,
+                        stroke_width: None,
+                        alignment: Some(koharu_scene::TextAlignment::Start),
+                        writing_mode: None,
+                        extensions: Default::default(),
                     },
-                    writing_mode: None,
-                    extensions: Default::default(),
-                },
-            )?;
+                )?;
+            }
             Ok(())
         })?;
         Ok((

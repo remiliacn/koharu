@@ -263,10 +263,11 @@ async fn build_patch(
     let page = input.page;
     let mut edit = input.scene.edit_as(generation.clone());
     edit.observe_subtree(page)?;
+    let image = image.to_rgb8();
     if let Some(output) = output {
         remove_previous_regions(input, &mut edit, generation)
             .context("failed to replace the previous detection regions")?;
-        write_page(input, &mut edit, page, image, output, boxes, generation)
+        write_page(input, &mut edit, page, &image, output, boxes, generation)
             .await
             .context("failed to write detection output")?;
     } else {
@@ -278,7 +279,7 @@ async fn build_patch(
             input,
             &mut edit,
             page,
-            &image.to_rgb8(),
+            &image,
             &boxed_detections(boxes),
             &pending_contents(boxes),
             size,
@@ -286,7 +287,7 @@ async fn build_patch(
         .await
         .context("failed to add drawn text boxes to the text mask")?;
     }
-    write_drawn_boxes(&mut edit, page, boxes, generation)
+    write_drawn_boxes(&mut edit, page, &image, boxes, generation)
         .context("failed to link drawn text boxes to their detected text")?;
     finish(edit)
 }
@@ -324,7 +325,7 @@ async fn write_page(
     input: &StageInput,
     edit: &mut koharu_scene::Edit,
     page: EntityId,
-    image: &DynamicImage,
+    image: &RgbImage,
     output: KoharuLayoutDetections,
     boxes: &[(DrawnBox, Vec<KoharuLayoutDetection>)],
     generation: &Generation,
@@ -351,8 +352,7 @@ async fn write_page(
     non_maximum_suppression(&mut detections, 0.5);
     sort_by_layout(&mut detections);
 
-    let image = image.to_rgb8();
-    let regions = write_regions(&input.scene, edit, page, &image, &detections, generation)
+    let regions = write_regions(&input.scene, edit, page, image, &detections, generation)
         .context("failed to write detected regions")?;
     link_dialogue_regions(edit, &regions, generation)
         .context("failed to associate detected text with dialogue regions")?;
@@ -361,7 +361,7 @@ async fn write_page(
         input,
         edit,
         page,
-        &image,
+        image,
         &detections,
         &pending_contents(boxes),
         size,
@@ -482,26 +482,8 @@ fn write_region<'a>(
     )?;
     write_text_role(edit, content, "dev.koharu.text.free-text", generation)
         .context("failed to set the detected text role")?;
-    edit.set(
-        layer,
-        &Typography {
-            origin: Origin::Generated(generation.clone()),
-            preferred_font: None,
-            font_weight: None,
-            font_style: None,
-            size: None,
-            auto_fit: true,
-            color: inferred.map(|value| [value.color[0], value.color[1], value.color[2], u8::MAX]),
-            stroke_color: inferred
-                .and_then(|value| value.stroke_color)
-                .map(|color| [color[0], color[1], color[2], u8::MAX]),
-            stroke_width: inferred.and_then(|value| value.stroke_width),
-            alignment: None,
-            writing_mode: inferred.map(|value| value.writing_mode),
-            extensions: Default::default(),
-        },
-    )
-    .context("failed to set detected typography")?;
+    edit.set(layer, &detected_typography(inferred, generation))
+        .context("failed to set detected typography")?;
     edit.relate::<RecognizedFrom>(content, entity)
         .context("failed to associate detected text content with its region")?;
 
@@ -512,6 +494,25 @@ fn write_region<'a>(
         content,
         layer,
     }))
+}
+
+fn detected_typography(inferred: Option<InferredTypography>, generation: &Generation) -> Typography {
+    Typography {
+        origin: Origin::Generated(generation.clone()),
+        preferred_font: None,
+        font_weight: None,
+        font_style: None,
+        size: None,
+        auto_fit: true,
+        color: inferred.map(|value| [value.color[0], value.color[1], value.color[2], u8::MAX]),
+        stroke_color: inferred
+            .and_then(|value| value.stroke_color)
+            .map(|color| [color[0], color[1], color[2], u8::MAX]),
+        stroke_width: inferred.and_then(|value| value.stroke_width),
+        alignment: None,
+        writing_mode: inferred.map(|value| value.writing_mode),
+        extensions: Default::default(),
+    }
 }
 
 fn link_dialogue_regions(
@@ -2028,6 +2029,8 @@ fn intersects([left, top, right, bottom]: [f32; 4], region: crate::Bounds) -> bo
 /// A paragraph text box the user drew where no detected text backs it yet.
 struct DrawnBox {
     content: EntityId,
+    layer: EntityId,
+    styled: bool,
     geometry: Geometry,
     bounds: [f32; 4],
 }
@@ -2068,6 +2071,8 @@ fn drawn_boxes(input: &StageInput) -> Result<Vec<DrawnBox>> {
         };
         boxes.push(DrawnBox {
             content: content.id(),
+            layer: layer.id(),
+            styled: input.scene.component::<Typography>(layer.id())?.is_some(),
             geometry,
             bounds: [left as f32, top as f32, right as f32, bottom as f32],
         });
@@ -2163,6 +2168,7 @@ fn boxed_detections(
 fn write_drawn_boxes(
     edit: &mut koharu_scene::Edit,
     page: EntityId,
+    image: &RgbImage,
     boxes: &[(DrawnBox, Vec<KoharuLayoutDetection>)],
     generation: &Generation,
 ) -> Result<()> {
@@ -2196,6 +2202,15 @@ fn write_drawn_boxes(
             },
         )?;
         edit.relate::<RecognizedFrom>(drawn.content, region)?;
+        // Paint is measured from the largest lettering only for a box the user has not styled.
+        if !drawn.styled
+            && let Some(inferred) = detections
+                .iter()
+                .max_by_key(|detection| detection.area)
+                .and_then(|detection| infer_typography(image, detection))
+        {
+            edit.set(drawn.layer, &detected_typography(Some(inferred), generation))?;
+        }
     }
     Ok(())
 }
@@ -2629,6 +2644,94 @@ mod tests {
             .to_luma8();
         assert_eq!(mask.get_pixel(50, 50)[0], u8::MAX);
         assert_eq!(mask.get_pixel(80, 80)[0], 0);
+    }
+
+    #[tokio::test]
+    async fn drawn_boxes_take_the_measured_paint_unless_the_user_styled_them() {
+        let mut session = Session::memory().await.unwrap();
+        let user_typography = Typography {
+            origin: Origin::User,
+            preferred_font: None,
+            font_weight: None,
+            font_style: None,
+            size: None,
+            auto_fit: true,
+            color: Some([255, 0, 0, 255]),
+            stroke_color: None,
+            stroke_width: None,
+            alignment: None,
+            writing_mode: None,
+            extensions: Default::default(),
+        };
+        let mut ids = None;
+        let patch = session
+            .snapshot()
+            .patch(|edit| {
+                let page = edit.add_page(PageDraft::new("page", 96.0, 96.0), At::End)?;
+                let unstyled =
+                    add_drawn_box(edit, page, Geometry::rectangle(16.0, 34.0, 64.0, 28.0))?;
+                let content = edit.add_text_content(page, At::End)?;
+                let styled = edit.add_text_layer(
+                    page,
+                    At::End,
+                    content,
+                    &TextLayout {
+                        origin: Origin::User,
+                        kind: TextLayoutKind::Paragraph,
+                        angle_degrees: Some(0.0),
+                    },
+                )?;
+                edit.set(styled, &Geometry::rectangle(16.0, 34.0, 64.0, 28.0))?;
+                edit.set(styled, &user_typography)?;
+                ids = Some((page, unstyled, styled));
+                Ok(())
+            })
+            .unwrap();
+        let snapshot = session.commit(patch).await.unwrap().snapshot;
+        let (page, unstyled, styled) = ids.unwrap();
+        let input = StageInput::new(
+            snapshot,
+            page,
+            None,
+            None,
+            Arc::new(crate::ImageCache::default()),
+            None,
+        );
+        let (image, detection) = outlined_text(3, [0, 0, 0], [255, 255, 255]);
+        let boxes = drawn_boxes(&input)
+            .unwrap()
+            .into_iter()
+            .map(|drawn| (drawn, vec![detection.clone()]))
+            .collect::<Vec<_>>();
+        let unstyled = boxes
+            .iter()
+            .find(|(drawn, _)| drawn.content == unstyled)
+            .map(|(drawn, _)| drawn.layer)
+            .unwrap();
+        let generation = generation(super::PRODUCER, super::MODEL_ID).unwrap();
+
+        let patch = build_patch(
+            &input,
+            &image::DynamicImage::ImageRgb8(image),
+            None,
+            &boxes,
+            &generation,
+        )
+        .await
+        .unwrap();
+        let snapshot = session.commit(patch).await.unwrap().snapshot;
+
+        let measured = snapshot
+            .component::<Typography>(unstyled)
+            .unwrap()
+            .expect("an unstyled drawn box takes the measured paint");
+        assert_eq!(measured.color, Some([0, 0, 0, 255]));
+        assert_eq!(measured.stroke_color, Some([255, 255, 255, 255]));
+        assert_eq!(measured.stroke_width, Some(3.0));
+        assert_eq!(
+            snapshot.component::<Typography>(styled).unwrap(),
+            Some(user_typography)
+        );
     }
 
     #[tokio::test]

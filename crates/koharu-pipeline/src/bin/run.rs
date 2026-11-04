@@ -130,6 +130,7 @@ impl Arguments {
                     InpaintingModel::RoremMixed(RoremMixedConfig::default())
                 }
             },
+            inpainting_text_boxes_only: false,
             processor: Default::default(),
         }
     }

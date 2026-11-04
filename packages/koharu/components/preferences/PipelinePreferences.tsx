@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@koharu/ui/components/select'
+import { Switch } from '@koharu/ui/components/switch'
 
 const stages = [
   ['detection', Search],
@@ -92,6 +93,17 @@ export function PipelinePreferences({
                   model={model}
                   onChange={(next) => onChange(replaceStage(value, stage, next))}
                 />
+                {stage === 'inpainting' && (
+                  <label className='flex items-center justify-between gap-3 text-[11px] text-muted-foreground'>
+                    {t('settings.pipeline.options.textBoxesOnly')}
+                    <Switch
+                      checked={value.inpainting_text_boxes_only}
+                      onCheckedChange={(inpainting_text_boxes_only) =>
+                        onChange({ ...value, inpainting_text_boxes_only })
+                      }
+                    />
+                  </label>
+                )}
               </div>
             </PreferenceRow>
           )

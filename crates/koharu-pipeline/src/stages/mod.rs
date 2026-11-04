@@ -86,7 +86,11 @@ impl Stages {
             detection: detection::Processor::new(config.detection()?, device.clone()),
             ocr: ocr::Processor::new(config.ocr.clone(), device.clone()),
             translation: translation::Processor::new(config.translation.clone(), translator),
-            inpainting: inpainting::Processor::new(config.inpainting()?, device.clone())?,
+            inpainting: inpainting::Processor::new(
+                config.inpainting()?,
+                config.inpainting_text_boxes_only,
+                device.clone(),
+            )?,
         })
     }
 

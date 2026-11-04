@@ -23,7 +23,7 @@ use koharu_ml::{
 };
 use koharu_scene::{
     AssetInput, AssetMetadata, AssetRole, At, BubbleRegion, EntityOrigin, Geometry, Origin,
-    RasterLayer, RasterLayerKind, Region, RegionSpec,
+    RasterLayer, RasterLayerKind, Region, RegionSpec, TextLayout,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -65,12 +65,17 @@ impl Default for RoremMixedConfig {
 
 pub(super) struct Processor {
     config: InpaintingModel,
+    text_boxes_only: bool,
     device: koharu_ml::Device,
     model: ModelCell<Model>,
 }
 
 impl Processor {
-    pub(super) fn new(config: InpaintingModel, device: koharu_ml::Device) -> Result<Self> {
+    pub(super) fn new(
+        config: InpaintingModel,
+        text_boxes_only: bool,
+        device: koharu_ml::Device,
+    ) -> Result<Self> {
         match &config {
             InpaintingModel::LaMa {} | InpaintingModel::AotInpainting {} => {}
             InpaintingModel::Flux2Klein(settings) => {
@@ -89,6 +94,7 @@ impl Processor {
 
         Ok(Self {
             config,
+            text_boxes_only,
             device,
             model: ModelCell::new(),
         })
@@ -140,7 +146,7 @@ impl StageProcessor for Processor {
             .await
             .as_ref()
             .ok_or_else(|| anyhow!("inpainting model is not loaded"))?
-            .run(input)
+            .run(input, self.text_boxes_only)
             .await
     }
 }
@@ -178,8 +184,8 @@ impl Model {
         }
     }
 
-    async fn run(&self, input: StageInput) -> Result<koharu_scene::Patch> {
-        let mut prepared = prepare(&input).await?;
+    async fn run(&self, input: StageInput, text_boxes_only: bool) -> Result<koharu_scene::Patch> {
+        let mut prepared = prepare(&input, text_boxes_only).await?;
         if prepared.mask.as_raw().iter().all(|value| *value == 0) {
             return finish(input.scene.edit());
         }
@@ -433,33 +439,88 @@ fn flat_fill_regions(input: &StageInput, width: u32, height: u32) -> Result<Vec<
         let Some(geometry) = input.scene.component::<Geometry>(id)? else {
             continue;
         };
+        if geometry.points.len() < 3 {
+            continue;
+        }
+        let Some(bounds) = geometry_bounds(&geometry, width, height) else {
+            continue;
+        };
         let polygon = geometry
             .points
             .iter()
             .map(|point| (point.x as f32, point.y as f32))
             .collect::<Vec<_>>();
-        if polygon.len() < 3 {
-            continue;
-        }
-        let (mut left, mut top) = (f32::INFINITY, f32::INFINITY);
-        let (mut right, mut bottom) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
-        for &(x, y) in &polygon {
-            left = left.min(x);
-            top = top.min(y);
-            right = right.max(x);
-            bottom = bottom.max(y);
-        }
-        let bounds = [
-            left.floor().clamp(0.0, width as f32) as u32,
-            top.floor().clamp(0.0, height as f32) as u32,
-            right.ceil().clamp(0.0, width as f32) as u32,
-            bottom.ceil().clamp(0.0, height as f32) as u32,
-        ];
-        if bounds[2] > bounds[0] && bounds[3] > bounds[1] {
-            regions.push(FlatFillRegion { bounds, polygon });
-        }
+        regions.push(FlatFillRegion { bounds, polygon });
     }
     Ok(regions)
+}
+
+fn geometry_bounds(geometry: &Geometry, width: u32, height: u32) -> Option<[u32; 4]> {
+    let (mut left, mut top) = (f32::INFINITY, f32::INFINITY);
+    let (mut right, mut bottom) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for point in &geometry.points {
+        let (x, y) = (point.x as f32, point.y as f32);
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x);
+        bottom = bottom.max(y);
+    }
+    let bounds = [
+        left.floor().clamp(0.0, width as f32) as u32,
+        top.floor().clamp(0.0, height as f32) as u32,
+        right.ceil().clamp(0.0, width as f32) as u32,
+        bottom.ceil().clamp(0.0, height as f32) as u32,
+    ];
+    (bounds[2] > bounds[0] && bounds[3] > bounds[1]).then_some(bounds)
+}
+
+/// Bounds of every text box on the page: the detected lettering it was
+/// recognized from and its own authored frame, so a moved box still covers the
+/// original lettering.
+fn text_box_bounds(input: &StageInput, width: u32, height: u32) -> Result<Vec<[u32; 4]>> {
+    let mut boxes = Vec::new();
+    for entity in input.scene.descendants(input.page)? {
+        let id = entity.id();
+        if input.scene.component::<TextLayout>(id)?.is_none() {
+            continue;
+        }
+        let source = input
+            .scene
+            .text_layer(id)?
+            .content()?
+            .source_region()?
+            .map(|region| region.geometry())
+            .transpose()?;
+        let frame = input.scene.component::<Geometry>(id)?;
+        boxes.extend(
+            [source, frame]
+                .iter()
+                .flatten()
+                .filter_map(|geometry| geometry_bounds(geometry, width, height)),
+        );
+    }
+    Ok(boxes)
+}
+
+// Segmentation also marks lettering that has no text box, such as text the
+// user deleted or the detector never boxed. Whole mask components are kept or
+// dropped so a kept box also keeps the outline that spills past its edge.
+fn retain_text_box_components(mask: &mut GrayImage, boxes: &[[u32; 4]]) {
+    let (labels, components) = mask_components(mask);
+    let mut kept = vec![false; components.last().map_or(1, |last| last.label as usize + 1)];
+    for &[left, top, right, bottom] in boxes {
+        for y in top..bottom {
+            for x in left..right {
+                kept[labels.get_pixel(x, y)[0] as usize] = true;
+            }
+        }
+    }
+    kept[0] = false;
+    for (pixel, label) in mask.iter_mut().zip(labels.iter()) {
+        if !kept[*label as usize] {
+            *pixel = 0;
+        }
+    }
 }
 
 struct InpaintInput {
@@ -472,7 +533,7 @@ struct InpaintInput {
     flat_fill_regions: Vec<FlatFillRegion>,
 }
 
-async fn prepare(input: &StageInput) -> Result<InpaintInput> {
+async fn prepare(input: &StageInput, text_boxes_only: bool) -> Result<InpaintInput> {
     let page = input.page;
     let original = input
         .images
@@ -535,6 +596,10 @@ async fn prepare(input: &StageInput) -> Result<InpaintInput> {
                     text_mask = layer;
                 }
             }
+        }
+        if text_boxes_only {
+            let boxes = text_box_bounds(input, source.width(), source.height())?;
+            retain_text_box_components(&mut mask, &boxes);
         }
     }
     if let Some(bounds) = input.region {
@@ -1067,7 +1132,7 @@ mod tests {
             }),
         );
 
-        let prepared = prepare(&input).await.unwrap();
+        let prepared = prepare(&input, true).await.unwrap();
         assert_eq!(prepared.mask.get_pixel(3, 4), &Luma([255]));
         assert_eq!(prepared.mask.get_pixel(0, 0), &Luma([0]));
         assert!(prepared.text_mask.pixels().all(|pixel| pixel[0] == 0));
@@ -1184,10 +1249,27 @@ mod tests {
                 png: Arc::<[u8]>::from([]),
             }),
         );
-        let processor = Processor::new(InpaintingModel::LaMa {}, koharu_ml::Device::cpu()).unwrap();
+        let processor =
+            Processor::new(InpaintingModel::LaMa {}, false, koharu_ml::Device::cpu()).unwrap();
 
         assert!(processor.skip(&automatic).unwrap());
         assert!(!processor.skip(&manual).unwrap());
+    }
+
+    #[test]
+    fn mask_components_without_a_text_box_are_dropped() {
+        let mut mask = GrayImage::new(64, 32);
+        for y in 8..16 {
+            for x in (4..20).chain(40..56) {
+                mask.put_pixel(x, y, Luma([u8::MAX]));
+            }
+        }
+
+        retain_text_box_components(&mut mask, &[[8, 4, 12, 12]]);
+
+        assert_eq!(mask.get_pixel(4, 8), &Luma([u8::MAX]));
+        assert_eq!(mask.get_pixel(19, 15), &Luma([u8::MAX]));
+        assert_eq!(mask.get_pixel(40, 8), &Luma([0]));
     }
 
     fn rectangle_region([left, top, right, bottom]: [u32; 4]) -> FlatFillRegion {

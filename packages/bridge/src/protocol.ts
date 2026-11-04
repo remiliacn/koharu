@@ -369,6 +369,8 @@ export type PipelineConfig = {
 	ocr: OcrModel,
 	translation: TranslationConfig,
 	inpainting: InpaintingModel,
+	/**  Automatic inpainting removes only mask components that touch a text box. */
+	inpainting_text_boxes_only: boolean,
 	/**
 	 *  Settings for every model are kept independently of the active model.
 	 *  The active stage fields above only select which profile is used.

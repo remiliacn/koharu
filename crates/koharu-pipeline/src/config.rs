@@ -11,6 +11,8 @@ pub struct PipelineConfig {
     pub ocr: OcrModel,
     pub translation: TranslationConfig,
     pub inpainting: InpaintingModel,
+    /// Automatic inpainting removes only mask components that touch a text box.
+    pub inpainting_text_boxes_only: bool,
     /// Settings for every model are kept independently of the active model.
     /// The active stage fields above only select which profile is used.
     pub processor: ProcessorConfig,
@@ -19,6 +21,7 @@ pub struct PipelineConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 struct PipelineFile {
+    inpainting_text_boxes_only: bool,
     detection: ModelSelection,
     ocr: ModelSelection,
     translation: TranslationConfig,
@@ -30,6 +33,7 @@ struct PipelineFile {
 impl Default for PipelineFile {
     fn default() -> Self {
         Self {
+            inpainting_text_boxes_only: false,
             detection: ModelSelection {
                 model: "koharu-layout-rfdetr-seg-2xl".to_owned(),
             },
@@ -87,6 +91,7 @@ impl Serialize for PipelineConfig {
             InpaintingModel::LaMa {} | InpaintingModel::AotInpainting {} => {}
         }
         PipelineFile {
+            inpainting_text_boxes_only: self.inpainting_text_boxes_only,
             detection: ModelSelection {
                 model: detection.to_owned(),
             },
@@ -154,6 +159,7 @@ impl<'de> Deserialize<'de> for PipelineConfig {
             ocr,
             translation: file.translation,
             inpainting,
+            inpainting_text_boxes_only: file.inpainting_text_boxes_only,
             processor: file.processor,
         })
     }
@@ -168,6 +174,7 @@ impl Default for PipelineConfig {
             ocr: OcrModel::PaddleOcrVl1_6,
             translation: TranslationConfig::default(),
             inpainting: InpaintingModel::LaMa {},
+            inpainting_text_boxes_only: false,
             processor: ProcessorConfig::default(),
         }
     }
@@ -445,6 +452,7 @@ mod tests {
             inpainting: InpaintingModel::Flux2Klein(Flux2KleinConfig {
                 prompt: "Keep the line art.".to_owned(),
             }),
+            inpainting_text_boxes_only: false,
             processor: ProcessorConfig::default(),
         };
         let document = toml::to_string(&config).unwrap();

@@ -946,10 +946,33 @@ function FontSizeField({
   const { t } = useTranslation()
   const id = useId()
   const [draft, setDraft] = useState<number | null>(value)
+  const pressedSizeRef = useRef<number | null>(null)
 
   useEffect(() => {
     setDraft(autoFit ? null : value)
   }, [autoFit, value])
+
+  // The stepper buttons walk the preset scale instead of the fixed step, so their changes are
+  // vetoed and the preset is tracked here until the press is released and committed once.
+  const change: NonNullable<React.ComponentProps<typeof NumberField>['onValueChange']> = (
+    next,
+    details,
+  ) => {
+    if (details.reason !== 'increment-press' && details.reason !== 'decrement-press') {
+      setDraft(next)
+      return
+    }
+    details.cancel()
+    const current = pressedSizeRef.current ?? draft ?? value
+    const preset =
+      details.reason === 'increment-press'
+        ? fontSizePresets.find((size) => size > current)
+        : fontSizePresets.findLast((size) => size < current)
+    if (preset !== undefined) {
+      pressedSizeRef.current = preset
+      setDraft(preset)
+    }
+  }
 
   const select = (choice: string) => {
     if (choice === 'auto') {
@@ -964,7 +987,18 @@ function FontSizeField({
     }
   }
 
-  const commit = (next: number | null) => {
+  const commit: NonNullable<React.ComponentProps<typeof NumberField>['onValueCommitted']> = (
+    next,
+    details,
+  ) => {
+    if (details.reason === 'increment-press' || details.reason === 'decrement-press') {
+      const pressed = pressedSizeRef.current
+      pressedSizeRef.current = null
+      if (pressed !== null) {
+        onChange(pressed)
+      }
+      return
+    }
     if (next !== null && next > 0 && next <= 300) {
       onChange(next)
     } else {
@@ -982,16 +1016,21 @@ function FontSizeField({
       min={0.5}
       max={300}
       step={0.5}
-      onValueChange={setDraft}
+      onValueChange={change}
       onValueCommitted={commit}
     >
       <NumberFieldGroup>
+        <NumberFieldDecrement aria-label={t('inspector.decreaseFontSize')}>
+          <Minus />
+        </NumberFieldDecrement>
         <NumberFieldInput
           data-testid='type-size'
           aria-label={t('inspector.fontSize')}
           placeholder={t('inspector.auto')}
-          className='px-2 text-left'
         />
+        <NumberFieldIncrement aria-label={t('inspector.increaseFontSize')}>
+          <Plus />
+        </NumberFieldIncrement>
         <DropdownMenu>
           <DropdownMenuTrigger
             disabled={disabled}

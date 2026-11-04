@@ -41,6 +41,7 @@ const preferences: Preferences = {
       instructions: null,
     },
     inpainting: { model: 'lama' },
+    inpainting_text_boxes_only: false,
     processor: {},
   },
   providers: {
