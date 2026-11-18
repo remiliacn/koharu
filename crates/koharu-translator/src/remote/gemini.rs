@@ -105,7 +105,13 @@ pub(super) async fn translate(
                     }
                 }),
                 thinking_level: (!model.starts_with("gemini-2.5")).then_some(if enabled {
-                    "high"
+                    // Flash translation gains little from high thinking; medium is accepted by
+                    // every Flash and Flash-Lite generation, including the -latest aliases.
+                    if model.contains("flash") {
+                        "low"
+                    } else {
+                        "high"
+                    }
                 } else if model.starts_with("gemma-4") {
                     "minimal"
                 } else {
