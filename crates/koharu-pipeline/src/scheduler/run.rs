@@ -15,7 +15,7 @@ use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use tokio_util::sync::CancellationToken;
 
 use super::Mode;
-use crate::{Error, PipelineConfig, Result, RunId, Stage, Target, stages::inpaint::AreaWork};
+use crate::{Error, PipelineConfig, Result, RunId, Stage, Target, stages::AreaWork};
 
 pub(crate) struct Run {
     pub(super) id: RunId,
@@ -101,8 +101,8 @@ impl Plan {
                 }
             }
             Target::Area { page, area, prompt } => {
-                if stages.iter().ne([Stage::Inpaint].iter()) {
-                    return Err(Error::invalid("an area takes inpainting only"));
+                if stages.len() != 1 || !stages.iter().all(|stage| matches!(stage, Stage::Detect | Stage::Inpaint)) {
+                    return Err(Error::invalid("an area takes detection or inpainting alone"));
                 }
                 project.page(*page)?;
                 if area.pixels.len() != area.rect.width as usize * area.rect.height as usize {
@@ -249,6 +249,8 @@ mod tests {
         };
         assert!(Plan::new(&project, &area, &stages(&[Stage::Translate])).is_err());
         assert!(Plan::new(&project, &area, &stages(&[Stage::Inpaint])).is_ok());
+        assert!(Plan::new(&project, &area, &stages(&[Stage::Detect])).is_ok());
+        assert!(Plan::new(&project, &area, &stages(&[Stage::Detect, Stage::Inpaint])).is_err());
         Ok(())
     }
 

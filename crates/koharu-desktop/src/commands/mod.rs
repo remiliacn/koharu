@@ -98,6 +98,7 @@ pub fn handler() -> impl Fn(Invoke<CefRuntime>) -> bool + Send + Sync + 'static 
         canvas::set_zoom,
         canvas::select,
         processing::fill,
+        processing::detect_area,
         canvas::deselect,
         #[cfg(debug_assertions)]
         debug::capture,
@@ -169,6 +170,7 @@ pub fn bindings(types: &mut Types) -> Vec<Function> {
         canvas::set_zoom,
         canvas::select,
         processing::fill,
+        processing::detect_area,
         canvas::deselect,
     ](types)
 }

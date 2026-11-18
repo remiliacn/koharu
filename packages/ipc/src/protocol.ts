@@ -371,6 +371,11 @@ export type ImportSource =
   | 'files'
   /**  Every page file directly in a folder. */
   | 'folder'
+  /**
+   *  Files and folders dropped onto the window: each file that holds
+   *  pages, and every page file directly in each folder.
+   */
+  | { paths: string[] }
 
 /**  The inpainters, by id in the section and by name. */
 export type Inpainter = 'lama' | 'flux3-klein' | 'moss-image' | 'qwen-image'
@@ -825,10 +830,11 @@ export type Target =
   /**  Recognition, inpainting, or translation on blocks. */
   | ({ blocks: LayerId[] } & { area?: never; pages?: never })
   /**
-   *  Inpainting only: a new raster layer limited by a layer mask to the
-   *  area, as Photoshop's Generative Fill and Content-Aware Fill write one.
-   *  Its prompt goes ahead of the inpainter section's; LaMa, which takes
-   *  none, ignores it.
+   *  Detection or inpainting alone. Detection reads the area alone and puts
+   *  the blocks it finds there in place of the area's. Inpainting writes a
+   *  new raster layer limited by a layer mask to the area, as Photoshop's
+   *  Generative Fill and Content-Aware Fill write one. Its prompt goes ahead
+   *  of the inpainter section's; LaMa, which takes none, ignores it.
    */
   | ({
       area: {
@@ -1014,7 +1020,7 @@ export const commands = {
   /** `family`'s name set in it, as WebP. */
   getFontPreview: (family: string) =>
     invoke<ArrayBuffer>('get_font_preview', { family }, { headers: headers() }),
-  /** Picks files or a folder and adds their pages after the project's last: the files in name order, numbers by value, an archive's or a PDF's own pages in theirs. */
+  /** Picks files or a folder, or takes the dropped ones, and adds their pages after the project's last: the files in name order, numbers by value, an archive's or a PDF's own pages in theirs. */
   import: (source: ImportSource) => invoke<null>('import', { source }, { headers: headers() }),
   /** Picks where the open project's pages go, and writes them there. `labels` names a PSD's layers the scene names nothing, in the interface's language. */
   export: (format: ExportFormat, labels: Labels) =>
@@ -1039,6 +1045,8 @@ export const commands = {
   /** Fills the area the marquee and the lasso marked with `model` after `prompt`, or the inpainter's own prompt when there's none, as Photoshop's Generative Fill does with the model its bar shows; `None` while no area is marked. The model is this run's only, in the settings' place. */
   fill: (prompt: string | null, model: Inpainter) =>
     invoke<RunId | null>('fill', { prompt, model }, { headers: headers() }),
+  /** Detects in the area the marquee and the lasso marked alone, for lettering the page's detection missed; the blocks found there take the place of the area's. `None` while no area is marked. */
+  detectArea: () => invoke<RunId | null>('detect_area', {}, { headers: headers() }),
   /** Drops the area the marquee and the lasso marked, as Photoshop's Deselect does. */
   deselect: () => invoke<null>('deselect', {}, { headers: headers() }),
 }

@@ -2,33 +2,56 @@
 //! block with its mask.
 
 use anyhow::Result;
-use image::{GrayImage, Luma};
+use image::{GrayImage, Luma, RgbImage};
 use imageproc::{distance_transform::Norm, morphology::dilate};
 use koharu_ml::koharu_layout_highres::{Kind, Layout, Lettering, Mask, Typography};
-use koharu_scene::{Bounds, Op, PageId, Rect, Ref, Rgba, Transform};
+use koharu_scene::{Bounds, LayerId, Op, PageId, Rect, Ref, Rgba, Transform};
 use kurbo::{Affine, Point, Shape as _};
 use serde_json::{Value, json};
 
-use super::tree::{Node, Part, Tree};
+use super::{
+    outline::outlined,
+    tree::{Node, Part, Tree},
+};
 use crate::stages::action;
+
+/// What the parts are added from: the page's layout, each lettering's
+/// typography, and the page's pixels, as the detector read them.
+pub(super) struct Found<'a> {
+    pub(super) layout: &'a Layout,
+    pub(super) typography: &'a [Option<Typography>],
+    pub(super) pixels: &'a RgbImage,
+}
+
+/// Where a lettering found in an area goes: into `parent`, an existing
+/// panel or balloon, or the page, at `index`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Place {
+    pub(super) parent: Option<LayerId>,
+    pub(super) index: usize,
+}
 
 /// The ops adding the layout's parts at the top of the page, before the
 /// layers left there, with each block's mask.
-pub(super) fn additions(
-    layout: &Layout,
-    typography: &[Option<Typography>],
+pub(super) fn additions(found: &Found, page: PageId, model: &str) -> Result<Vec<Op>> {
+    let tree = Tree::new(found.layout);
+    let mut adding = Adding::new(found, page, model, None, &[]);
+    adding.add(&tree.top, None)?;
+    Ok(adding.ops)
+}
+
+/// The ops adding an area's lettering, which has no panel or balloon of its
+/// own: each block at its place, its mask kept out of `kept`, the blocks the
+/// page keeps.
+pub(super) fn placed(
+    found: &Found,
     page: PageId,
     model: &str,
+    places: &[Place],
+    kept: &[[f32; 4]],
 ) -> Result<Vec<Op>> {
-    let tree = Tree::new(layout);
-    let mut adding = Adding {
-        layout,
-        typography,
-        page,
-        model,
-        ops: Vec::new(),
-        labels: 0,
-    };
+    let tree = Tree::new(found.layout);
+    let mut adding = Adding::new(found, page, model, Some(places), kept);
     adding.add(&tree.top, None)?;
     Ok(adding.ops)
 }
@@ -36,17 +59,48 @@ pub(super) fn additions(
 struct Adding<'a> {
     layout: &'a Layout,
     typography: &'a [Option<Typography>],
+    pixels: &'a RgbImage,
     page: PageId,
     model: &'a str,
+    /// Each lettering's place, by its index, when the layout is an area's.
+    places: Option<&'a [Place]>,
+    kept: &'a [[f32; 4]],
     ops: Vec<Op>,
     labels: usize,
 }
 
-impl Adding<'_> {
+impl<'a> Adding<'a> {
+    fn new(
+        found: &Found<'a>,
+        page: PageId,
+        model: &'a str,
+        places: Option<&'a [Place]>,
+        kept: &'a [[f32; 4]],
+    ) -> Self {
+        Self {
+            layout: found.layout,
+            typography: found.typography,
+            pixels: found.pixels,
+            page,
+            model,
+            places,
+            kept,
+            ops: Vec::new(),
+            labels: 0,
+        }
+    }
+
     fn add(&mut self, nodes: &[Node], parent: Option<&str>) -> Result<()> {
         for (index, node) in nodes.iter().enumerate() {
             let label = format!("d{}", self.labels);
             self.labels += 1;
+            let (into, index) = match (parent, node.part, self.places) {
+                (None, Part::Lettering(at), Some(places)) => (
+                    places[at].parent.map(|parent| parent.to_string()),
+                    places[at].index,
+                ),
+                _ => (parent.map(|parent| format!("${parent}")), index),
+            };
             let (mut layer, score) = match node.part {
                 Part::Panel(at) => {
                     let panel = &self.layout.panels[at];
@@ -77,32 +131,12 @@ impl Adding<'_> {
                 "op": "add_layer",
                 "id": format!("${label}"),
                 "page": self.page,
-                "parent": parent.map(|parent| format!("${parent}")),
+                "parent": into,
                 "index": index,
                 "layer": layer,
             }))?);
             if let Part::Lettering(at) = node.part
-                && let Some((rect, pixels)) = grown(
-                    &self.layout.lettering[at].mask,
-                    self.layout.lettering[at].bbox,
-                    // Along its lines: a glyph's size, past either end.
-                    self.typography[at]
-                        .as_ref()
-                        .map_or([0.0; 2], |found| match found.vertical {
-                            true => [0.0, found.size],
-                            false => [found.size, 0.0],
-                        }),
-                    &self
-                        .layout
-                        .lettering
-                        .iter()
-                        .enumerate()
-                        .filter(|(other, _)| *other != at)
-                        .map(|(_, other)| other.bbox)
-                        .collect::<Vec<_>>(),
-                    self.layout.width,
-                    self.layout.height,
-                )
+                && let Some((rect, pixels)) = self.mask(at)
             {
                 self.ops.push(Op::WritePixels {
                     layer: Ref::try_from(format!("${label}.mask")).map_err(anyhow::Error::msg)?,
@@ -113,6 +147,35 @@ impl Adding<'_> {
             self.add(&node.children, Some(&label))?;
         }
         Ok(())
+    }
+
+    /// Lettering `at`'s mask, grown past its glyphs and over its outline,
+    /// and the rectangle it covers.
+    fn mask(&self, at: usize) -> Option<(Rect, Vec<u8>)> {
+        let others: Vec<[f32; 4]> = self
+            .layout
+            .lettering
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != at)
+            .map(|(_, other)| other.bbox)
+            .chain(self.kept.iter().copied())
+            .collect();
+        let (rect, pixels) = grown(
+            &self.layout.lettering[at].mask,
+            self.layout.lettering[at].bbox,
+            // Along its lines: a glyph's size, past either end.
+            self.typography[at]
+                .as_ref()
+                .map_or([0.0; 2], |found| match found.vertical {
+                    true => [0.0, found.size],
+                    false => [found.size, 0.0],
+                }),
+            &others,
+            self.layout.width,
+            self.layout.height,
+        )?;
+        Some(outlined(self.pixels, rect, pixels, &others))
     }
 }
 
@@ -192,7 +255,7 @@ fn block(lettering: &Lettering, typography: Option<&Typography>) -> Value {
     });
     let (bounds, transform) = turned(lettering.bbox, tilt);
     let opaque = |color: [u8; 3]| {
-        let [red, green, blue] = color.map(|channel| f32::from(channel) / 255.0);
+        let [red, green, blue] = snapped(color).map(|channel| f32::from(channel) / 255.0);
         Rgba([red, green, blue, 1.0])
     };
     let fill = typography.and_then(|found| found.ink).map(opaque);
@@ -216,6 +279,34 @@ fn block(lettering: &Lettering, typography: Option<&Typography>) -> Value {
             }},
         },
     })
+}
+
+/// The most a colour's channels may differ to snap, and the luma at or under
+/// which it snaps to black and at or over which to white, on 0 to 255.
+const SNAP_SPREAD: u8 = 48;
+const SNAP_DARK: u32 = 64;
+const SNAP_LIGHT: u32 = 191;
+
+/// A measured ink or outline colour, black or white when it's near either:
+/// the measure averages anti-aliased and scanned pixels, which leaves black
+/// ink a dark grey. Luma alone ranks saturated reds, blues, and purples as
+/// dark, so only near-neutral colours snap; a chromatic one is deliberate.
+fn snapped(color: [u8; 3]) -> [u8; 3] {
+    let (Some(&high), Some(&low)) = (color.iter().max(), color.iter().min()) else {
+        return color;
+    };
+    if high - low > SNAP_SPREAD {
+        return color;
+    }
+    let luma =
+        (u32::from(color[0]) * 54 + u32::from(color[1]) * 183 + u32::from(color[2]) * 19) / 256;
+    if luma <= SNAP_DARK {
+        [0; 3]
+    } else if luma >= SNAP_LIGHT {
+        [u8::MAX; 3]
+    } else {
+        color
+    }
 }
 
 /// The box that, turned by `tilt` degrees clockwise about its centre, `bbox`
@@ -323,6 +414,17 @@ mod tests {
         // And no mask reaches into another lettering's box.
         assert_eq!(covered([5.0, 0.0], &[[12.0, 0.0, 30.0, 10.0]])?, own);
         Ok(())
+    }
+
+    #[test]
+    fn only_near_neutral_colours_snap() {
+        assert_eq!(snapped([20, 31, 24]), [0, 0, 0]);
+        assert_eq!(snapped([40, 70, 40]), [0, 0, 0]);
+        assert_eq!(snapped([230, 240, 250]), [255, 255, 255]);
+        for chromatic in [[255, 0, 0], [181, 0, 255], [30, 40, 120], [20, 115, 235]] {
+            assert_eq!(snapped(chromatic), chromatic);
+        }
+        assert_eq!(snapped([128, 128, 128]), [128, 128, 128]);
     }
 
     #[test]

@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info_span;
 
 use crate::{
-    Error, Event, PipelineConfig, RunId, Stage,
+    Area, Error, Event, PipelineConfig, RunId, Stage,
     event::Events,
     gpu::{Gpu, Key, Models, Turn},
     scheduler::Priority,
@@ -176,11 +176,18 @@ impl Task {
     }
 }
 
+/// A painted area to detect in or to inpaint, and its own prompt, which only
+/// inpainting reads.
+pub(crate) struct AreaWork {
+    pub(crate) area: Area,
+    pub(crate) prompt: Option<String>,
+}
+
 /// What a stage needs besides its pages: the run's settings, its painted
 /// area, and for a translation, its project's conversation.
 pub(crate) struct Inputs {
     pub(crate) config: Arc<PipelineConfig>,
-    pub(crate) area: Option<Arc<inpaint::AreaWork>>,
+    pub(crate) area: Option<Arc<AreaWork>>,
     pub(crate) conversation: Option<OwnedMutexGuard<translate::Conversation>>,
 }
 
@@ -189,7 +196,7 @@ pub(crate) async fn run(task: Task, inputs: Inputs) -> Result<(), String> {
     let stage = task.stage;
     let config = &inputs.config;
     let result = match stage {
-        Stage::Detect => detect::detect(&task, config).await,
+        Stage::Detect => detect::detect(&task, config, inputs.area).await,
         Stage::Recognize => recognize::recognize(&task, config).await,
         Stage::Inpaint => inpaint::inpaint(&task, config, inputs.area).await,
         Stage::Translate => {

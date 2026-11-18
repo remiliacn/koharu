@@ -11,8 +11,9 @@ import {
 } from '@dnd-kit/core'
 import { useQuery } from '@tanstack/react-query'
 import { observeElementRect, useVirtualizer } from '@tanstack/react-virtual'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { FilePlus2, FolderOpen, LoaderCircle, MoreHorizontal, Settings } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { call, dispatch } from '@/lib/backend'
@@ -69,6 +70,9 @@ export function PageRail() {
   const [pageToDelete, setPageToDelete] = useState<{ page: string; number: number } | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const pageList = useRef<HTMLDivElement>(null)
+  const rail = useRef<HTMLElement>(null)
+  // Files from the OS are being dragged over the rail.
+  const [dropTarget, setDropTarget] = useState(false)
   const pageVirtualizer = useVirtualizer({
     count: pages.length,
     getScrollElement: () => pageList.current,
@@ -82,6 +86,49 @@ export function PageRail() {
         callback({ width: rect.width || 240, height: rect.height || 600 }),
       ),
   })
+
+  const importDropped = useEffectEvent((paths: string[]) => {
+    if (!importing) importPages({ paths })
+  })
+
+  // The window, not the page, receives an OS drop, in physical pixels from its corner, so only a
+  // drop over the rail imports.
+  useEffect(() => {
+    const overRail = ({ x, y }: { x: number; y: number }) => {
+      const bounds = rail.current?.getBoundingClientRect()
+      if (!bounds) return false
+      const left = x / window.devicePixelRatio
+      const top = y / window.devicePixelRatio
+      return (
+        left >= bounds.left && left <= bounds.right && top >= bounds.top && top <= bounds.bottom
+      )
+    }
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void getCurrentWindow()
+      .onDragDropEvent(({ payload }) => {
+        if (payload.type === 'leave') {
+          setDropTarget(false)
+          return
+        }
+        const over = overRail(payload.position)
+        if (payload.type === 'drop') {
+          setDropTarget(false)
+          if (over) importDropped(payload.paths)
+          return
+        }
+        setDropTarget(over)
+      })
+      .then((stop) => {
+        if (disposed) stop()
+        else unlisten = stop
+      })
+      .catch(() => undefined)
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
 
   const select = (index: number, additive: boolean, range: boolean) => {
     const page = pages[index]
@@ -128,7 +175,14 @@ export function PageRail() {
 
   return (
     <>
-      <aside className='flex h-full min-h-0 flex-col bg-[var(--surface-sidebar)]'>
+      <aside
+        ref={rail}
+        data-drop-target={dropTarget}
+        className={cn(
+          'flex h-full min-h-0 flex-col bg-[var(--surface-sidebar)]',
+          dropTarget && 'ring-2 ring-primary/60 ring-inset',
+        )}
+      >
         <header className='flex h-10 shrink-0 items-center px-2.5'>
           <div className='flex min-w-0 items-center gap-2'>
             <h2 className='text-[11px] font-semibold'>{t('navigator.pages')}</h2>

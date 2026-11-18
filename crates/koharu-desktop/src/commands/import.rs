@@ -29,12 +29,15 @@ use tauri_runtime_cef::CefRuntime;
 use super::Result;
 use crate::app::App;
 
-#[derive(Clone, Copy, Debug, Deserialize, Type)]
+#[derive(Clone, Debug, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportSource {
     Files,
     /// Every page file directly in a folder.
     Folder,
+    /// Files and folders dropped onto the window: each file that holds
+    /// pages, and every page file directly in each folder.
+    Paths(Vec<PathBuf>),
 }
 
 /// The page files the file dialog offers.
@@ -95,7 +98,15 @@ fn reader(path: &Path) -> Option<Reader> {
     }
 }
 
-/// Picks files or a folder and adds their pages after the project's last: the
+/// The files directly in `folder` that hold pages.
+fn page_files(folder: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    Ok(fs_err::read_dir(folder)?
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.is_file() && reader(path).is_some())
+        .collect())
+}
+
+/// Picks files or a folder, or takes the dropped ones, and adds their pages after the project's last: the
 /// files in name order, numbers by value, an archive's or a PDF's own pages in
 /// theirs.
 #[tauri::command]
@@ -112,13 +123,24 @@ pub async fn import(
             None => return Ok(()),
         },
         ImportSource::Folder => match dialog.pick_folder().await {
-            Some(folder) => fs_err::read_dir(folder.path())?
-                .filter_map(|entry| Some(entry.ok()?.path()))
-                .filter(|path| path.is_file() && reader(path).is_some())
-                .collect(),
+            Some(folder) => page_files(folder.path())?,
             None => return Ok(()),
         },
+        ImportSource::Paths(dropped) => {
+            let mut paths = Vec::new();
+            for path in dropped {
+                if path.is_dir() {
+                    paths.extend(page_files(&path)?);
+                } else if reader(&path).is_some() {
+                    paths.push(path);
+                }
+            }
+            paths
+        }
     };
+    if paths.is_empty() {
+        return Ok(());
+    }
     alphanumeric_sort::sort_slice_by_os_str_key(&mut paths, |path| {
         path.file_name().unwrap_or(path.as_os_str())
     });

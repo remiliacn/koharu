@@ -25,7 +25,7 @@ use self::{
     flat::{Fill, Place, Verdict},
     windows::Region,
 };
-use super::{Member, Task, action, key};
+use super::{AreaWork, Member, Task, action, key};
 use crate::{Area, PipelineConfig, Stage};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -59,12 +59,6 @@ impl Default for InpainterConfig {
             .to_owned(),
         }
     }
-}
-
-/// A painted area to inpaint, and its own prompt.
-pub(crate) struct AreaWork {
-    pub(crate) area: Area,
-    pub(crate) prompt: Option<String>,
 }
 
 /// A page's scan as it's being filled, and what the model redraws in it.
