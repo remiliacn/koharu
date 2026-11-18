@@ -1,43 +1,35 @@
 'use client'
 
+import {
+  DndContext,
+  PointerSensor,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core'
 import { useQuery } from '@tanstack/react-query'
 import { observeElementRect, useVirtualizer } from '@tanstack/react-virtual'
-import { getCurrentWebview } from '@tauri-apps/api/webview'
-import {
-  FilePlus2,
-  FolderOpen,
-  LoaderCircle,
-  MoreHorizontal,
-  Search,
-  Settings,
-  Trash2,
-} from 'lucide-react'
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import { FilePlus2, FolderOpen, LoaderCircle, MoreHorizontal, Settings } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { ResourceMonitor } from '@/components/editor/ResourceMonitor'
-import { call } from '@/lib/backend'
+import { call, dispatch } from '@/lib/backend'
+import { useImportPages, usePage, useProject } from '@/lib/queries'
+import { deletePages, movePage } from '@/lib/scene'
+import { pipelineStages, useKoharuStore } from '@/lib/store'
+import { commands, type ImportSource, type PageSummary, type Stage } from '@koharu/ipc/protocol'
 import {
-  pageKey,
-  pagesKey,
-  preparedPageKey,
-  projectKey,
-  queryClient,
-  refresh,
-  useImportPages,
-  usePage,
-  usePages,
-} from '@/lib/queries'
-import { useKoharuStore } from '@/lib/store'
-import { prefetchCanvasPages, showCanvasPage } from '@koharu/bridge/canvas'
-import {
-  commands,
-  type CanvasPagePreparation,
-  type Page,
-  type PageImportSource,
-  type PageSummary,
-  type ProjectInfo,
-} from '@koharu/bridge/protocol'
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@koharu/ui/components/alert-dialog'
 import { Button } from '@koharu/ui/components/button'
 import {
   ContextMenu,
@@ -47,36 +39,22 @@ import {
   ContextMenuTrigger,
 } from '@koharu/ui/components/context-menu'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@koharu/ui/components/dialog'
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@koharu/ui/components/dropdown-menu'
-import { Input } from '@koharu/ui/components/input'
 import { ScrollArea } from '@koharu/ui/components/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@koharu/ui/components/tooltip'
 import { cn } from '@koharu/ui/lib/utils'
 
 const emptyPages: PageSummary[] = []
 
-interface IntentPrefetchState {
-  project: string
-  revision: number
-  pages: Set<string>
-}
-
 export function PageRail() {
   const { t } = useTranslation()
-  const pages = usePages().data ?? emptyPages
+  const project = useProject().data
+  const pages = project?.pages ?? emptyPages
   const active = usePage().data?.id ?? null
   const selected = useKoharuStore((state) => state.selectedPages)
   const selectPages = useKoharuStore((state) => state.selectPages)
@@ -84,27 +62,17 @@ export function PageRail() {
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
   const { importPages, importing } = useImportPages()
   const anchor = useRef<number | null>(null)
-  const selectionRequest = useRef(0)
-  const intentPrefetch = useRef<IntentPrefetchState | null>(null)
-  const [dragged, setDragged] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
-  const [renaming, setRenaming] = useState<PageSummary | null>(null)
-  const [renameValue, setRenameValue] = useState('')
-  const [dropTarget, setDropTarget] = useState(false)
-  const rail = useRef<HTMLElement>(null)
-  const normalized = query.trim().toLocaleLowerCase()
-  const visiblePages = useMemo(
-    () =>
-      pages
-        .map((page, index) => ({ page, index }))
-        .filter(({ page }) => !normalized || page.label.toLocaleLowerCase().includes(normalized)),
-    [normalized, pages],
-  )
+  // A page being dragged, and the place of the page it's over.
+  const [dragged, setDragged] = useState<{ page: string; target: number | null } | null>(null)
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
+  // The page Delete asks about, kept while its dialog closes so the dialog still names it.
+  const [pageToDelete, setPageToDelete] = useState<{ page: string; number: number } | null>(null)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const pageList = useRef<HTMLDivElement>(null)
   const pageVirtualizer = useVirtualizer({
-    count: visiblePages.length,
+    count: pages.length,
     getScrollElement: () => pageList.current,
-    getItemKey: (index) => visiblePages[index]?.page.id ?? index,
+    getItemKey: (index) => pages[index]?.id ?? index,
     estimateSize: () => 72,
     gap: 2,
     overscan: 6,
@@ -114,56 +82,6 @@ export function PageRail() {
         callback({ width: rect.width || 240, height: rect.height || 600 }),
       ),
   })
-
-  useEffect(
-    () => () => {
-      selectionRequest.current += 1
-    },
-    [],
-  )
-
-  const importDropped = useEffectEvent((paths: string[]) => {
-    if (!importing) importPages({ paths })
-  })
-
-  // The browser drop event carries no file paths, so OS drops arrive as native
-  // drag-drop events in physical pixels; only drops over this panel import.
-  useEffect(() => {
-    const overRail = ({ x, y }: { x: number; y: number }) => {
-      const bounds = rail.current?.getBoundingClientRect()
-      if (!bounds) return false
-      const left = x / window.devicePixelRatio
-      const top = y / window.devicePixelRatio
-      return (
-        left >= bounds.left && left <= bounds.right && top >= bounds.top && top <= bounds.bottom
-      )
-    }
-    let disposed = false
-    let unlisten: (() => void) | undefined
-    void getCurrentWebview()
-      .onDragDropEvent(({ payload }) => {
-        if (payload.type === 'leave') {
-          setDropTarget(false)
-          return
-        }
-        const over = overRail(payload.position)
-        if (payload.type === 'drop') {
-          setDropTarget(false)
-          if (over) importDropped(payload.paths)
-          return
-        }
-        setDropTarget(over)
-      })
-      .then((stop) => {
-        if (disposed) stop()
-        else unlisten = stop
-      })
-      .catch(() => undefined)
-    return () => {
-      disposed = true
-      unlisten?.()
-    }
-  }, [])
 
   const select = (index: number, additive: boolean, range: boolean) => {
     const page = pages[index]
@@ -183,120 +101,34 @@ export function PageRail() {
       next = [page.id]
       anchor.current = index
     }
-    const previousProject = queryClient.getQueryData<ProjectInfo | null>(projectKey)
-    const previousPage = queryClient.getQueryData<Page | null>(pageKey)
-    const prepared = queryClient.getQueryData<CanvasPagePreparation>(preparedPageKey(page.id))
-    const activated = showCanvasPage(page.id, previousProject?.revision ?? null)
-    const request = ++selectionRequest.current
-    const synchronize = () => {
-      if (selectionRequest.current !== request) return
-      if (activated && previousProject && prepared?.revision === previousProject.revision) {
-        queryClient.setQueryData(projectKey, { ...previousProject, active_page: page.id })
-        queryClient.setQueryData(pageKey, prepared.page)
-      }
-      selectPages(next)
+    selectPages(next)
+    if (page.id !== active) {
       selectLayers([])
-      void call(commands.selectPage, page.id)
-        .then((selection) => {
-          if (selectionRequest.current !== request) return
-          queryClient.setQueryData(projectKey, selection.project)
-          queryClient.setQueryData(pageKey, selection.page)
-        })
-        .catch(() => {
-          if (selectionRequest.current !== request) return
-          if (queryClient.getQueryData<ProjectInfo | null>(projectKey)?.active_page === page.id) {
-            queryClient.setQueryData(projectKey, previousProject)
-            queryClient.setQueryData(pageKey, previousPage)
-          }
-        })
-    }
-    if (activated) {
-      requestAnimationFrame(() => window.setTimeout(synchronize, 0))
-    } else {
-      synchronize()
+      dispatch(commands.show, page.id)
     }
   }
 
-  const prefetchOnIntent = (page: string) => {
-    const project = queryClient.getQueryData<ProjectInfo | null>(projectKey)
-    if (!project || project.active_page === page) return
-    let state = intentPrefetch.current
-    if (!state || state.project !== project.name || state.revision !== project.revision) {
-      state = { project: project.name, revision: project.revision, pages: new Set() }
-      intentPrefetch.current = state
-    }
-    const prepared = queryClient.getQueryData<CanvasPagePreparation>(preparedPageKey(page))
-    if (prepared?.revision === project.revision || state.pages.has(page)) return
-    state.pages.add(page)
-    void prefetchCanvasPages([page])
-      .then((pages) => {
-        const current = queryClient.getQueryData<ProjectInfo | null>(projectKey)
-        const preparedPage = pages.find(
-          (candidate) => candidate.page.id === page && candidate.revision === project.revision,
-        )
-        if (
-          preparedPage &&
-          current?.name === project.name &&
-          current.revision === preparedPage.revision
-        ) {
-          queryClient.setQueryData(preparedPageKey(page), preparedPage)
-          return
-        }
-        if (intentPrefetch.current === state) state.pages.delete(page)
-      })
-      .catch(() => {
-        if (intentPrefetch.current === state) state.pages.delete(page)
-      })
-  }
-
-  const deletePages = (targets: string[]) =>
-    void call(commands.deletePages, targets)
+  const deletePage = (page: string) =>
+    void call(deletePages, [page])
       .then(() => {
-        selectPages(selected.filter((selectedPage) => !targets.includes(selectedPage)))
-        if (active && targets.includes(active)) selectLayers([])
-        return refresh(projectKey, pagesKey, pageKey)
+        selectPages(selected.filter((selectedPage) => selectedPage !== page))
+        if (active === page) selectLayers([])
       })
       .catch(() => undefined)
 
-  const openRename = (page: PageSummary) => {
-    setRenaming(page)
-    setRenameValue(page.label)
-  }
-
-  const closeRename = () => {
-    setRenaming(null)
-    setRenameValue('')
-  }
-
-  const submitRename = () => {
-    const page = renaming
-    const label = renameValue.trim()
-    if (!page || !label || label === page.label) {
-      closeRename()
-      return
+  /** A page dropped on another takes its place; `move_page` counts its index after the page is
+   * taken out, which is that place either way. */
+  const drop = (target: number | null) => {
+    const page = dragged?.page
+    setDragged(null)
+    if (page !== undefined && target !== null && pages[target]?.id !== page) {
+      dispatch(movePage, page, target)
     }
-    void call(commands.renamePage, page.id, label)
-      .then(() => refresh(projectKey, pagesKey, pageKey))
-      .catch(() => undefined)
-      .finally(closeRename)
   }
 
   return (
     <>
-      <aside
-        ref={rail}
-        data-drop-target={dropTarget}
-        className={cn(
-          'flex h-full min-h-0 flex-col bg-[var(--surface-sidebar)]',
-          dropTarget && 'ring-2 ring-primary/60 ring-inset',
-        )}
-        onDragOver={(event) => {
-          if (event.dataTransfer.types.includes('Files')) event.preventDefault()
-        }}
-        onDrop={(event) => {
-          if (event.dataTransfer.types.includes('Files')) event.preventDefault()
-        }}
-      >
+      <aside className='flex h-full min-h-0 flex-col bg-[var(--surface-sidebar)]'>
         <header className='flex h-10 shrink-0 items-center px-2.5'>
           <div className='flex min-w-0 items-center gap-2'>
             <h2 className='text-[11px] font-semibold'>{t('navigator.pages')}</h2>
@@ -317,21 +149,6 @@ export function PageRail() {
           )}
         </header>
 
-        {pages.length > 0 && (
-          <div className='border-b px-2 py-1.5'>
-            <label className='flex h-6 items-center gap-1.5 rounded-md border border-input bg-background/70 px-1.5'>
-              <Search className='size-3 text-muted-foreground' />
-              <Input
-                value={query}
-                aria-label={t('navigator.filter')}
-                placeholder={t('navigator.filter')}
-                className='h-5 min-w-0 border-0 bg-transparent p-0 text-[11px] shadow-none focus-visible:ring-0 md:text-[11px]'
-                onChange={(event) => setQuery(event.currentTarget.value)}
-              />
-            </label>
-          </div>
-        )}
-
         {pages.length === 0 ? (
           <div className='flex min-h-0 flex-1 flex-col items-center justify-center px-4 text-center'>
             <p className='text-[11px] font-medium'>{t('navigator.emptyTitle')}</p>
@@ -342,61 +159,70 @@ export function PageRail() {
               <PageImportMenu importing={importing} onImport={importPages} />
             </div>
           </div>
-        ) : visiblePages.length === 0 ? (
-          <div className='grid flex-1 place-items-center px-4 text-center text-[10px] text-muted-foreground'>
-            {t('navigator.noResults')}
-          </div>
         ) : (
-          <ScrollArea
-            className='min-h-0 flex-1'
-            viewportClassName='px-1.5 py-1.5'
-            viewportRef={pageList}
-            onKeyDown={(event) => {
-              if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return
-              if (useKoharuStore.getState().selectedLayers.length > 0) return
-              event.preventDefault()
-              selectPages(visiblePages.map(({ page }) => page.id))
-            }}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={pointerWithin}
+            onDragStart={({ active }) => setDragged({ page: String(active.id), target: null })}
+            onDragOver={({ over }) =>
+              setDragged(
+                (current) =>
+                  current && {
+                    ...current,
+                    target: over ? pages.findIndex((page) => page.id === over.id) : null,
+                  },
+              )
+            }
+            onDragCancel={() => setDragged(null)}
+            onDragEnd={({ over }) =>
+              drop(over ? pages.findIndex((page) => page.id === over.id) : null)
+            }
           >
-            <div className='relative w-full' style={{ height: pageVirtualizer.getTotalSize() }}>
-              {pageVirtualizer.getVirtualItems().map((virtualRow) => {
-                const item = visiblePages[virtualRow.index]
-                if (!item) return null
-                const { page, index } = item
-                const inSelection = selected.length > 1 && selected.includes(page.id)
-                return (
-                  <div
-                    key={virtualRow.key}
-                    data-index={virtualRow.index}
-                    className='absolute top-0 left-0 w-full'
-                    style={{ transform: `translateY(${virtualRow.start}px)` }}
-                  >
-                    <PageItem
-                      page={page}
-                      active={active === page.id}
-                      selected={selected.includes(page.id)}
-                      dragged={dragged === page.id}
-                      onIntent={active === page.id ? undefined : () => prefetchOnIntent(page.id)}
-                      onSelect={(additive, range) => select(index, additive, range)}
-                      onDragStart={() => setDragged(page.id)}
-                      onDragEnd={() => setDragged(null)}
-                      onRename={() => openRename(page)}
-                      onDelete={() => deletePages([page.id])}
-                      onDeleteSelection={inSelection ? () => deletePages(selected) : undefined}
-                      onDrop={() => {
-                        if (dragged && dragged !== page.id) {
-                          void call(commands.movePage, dragged, index)
-                            .then(() => refresh(projectKey, pagesKey))
-                            .catch(() => undefined)
+            <ScrollArea
+              className='min-h-0 flex-1'
+              viewportClassName='px-1.5 py-1.5'
+              viewportRef={pageList}
+            >
+              <div
+                className='relative w-full touch-none'
+                style={{ height: pageVirtualizer.getTotalSize() }}
+              >
+                {pageVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const page = pages[virtualRow.index]
+                  if (!page) return null
+                  const index = virtualRow.index
+                  return (
+                    <div
+                      key={virtualRow.key}
+                      data-index={virtualRow.index}
+                      className='absolute top-0 left-0 w-full'
+                      style={{ transform: `translateY(${virtualRow.start}px)` }}
+                    >
+                      <PageItem
+                        page={page}
+                        index={index}
+                        revision={project?.revisions[page.id]}
+                        active={active === page.id}
+                        selected={selected.includes(page.id)}
+                        dragged={dragged?.page === page.id}
+                        target={dragged !== null && dragged.target === index}
+                        onSelect={(additive, range) => select(index, additive, range)}
+                        onRun={(stage) =>
+                          void call(commands.runPipeline, { pages: [page.id] }, [stage]).catch(
+                            () => undefined,
+                          )
                         }
-                        setDragged(null)
-                      }}
-                    />
-                  </div>
-                )
-              })}
-            </div>
-          </ScrollArea>
+                        onDelete={() => {
+                          setPageToDelete({ page: page.id, number: index + 1 })
+                          setConfirmingDelete(true)
+                        }}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            </ScrollArea>
+          </DndContext>
         )}
 
         <div className='mt-auto flex shrink-0 items-center gap-2 px-2 py-2'>
@@ -417,45 +243,32 @@ export function PageRail() {
             </TooltipTrigger>
             <TooltipContent side='right'>{t('menu.settings')}</TooltipContent>
           </Tooltip>
-          <ResourceMonitor />
         </div>
       </aside>
-
-      <Dialog
-        open={renaming !== null}
-        onOpenChange={(open) => {
-          if (!open) closeRename()
-        }}
-      >
-        <DialogContent className='sm:max-w-md'>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault()
-              submitRename()
-            }}
-          >
-            <DialogHeader>
-              <DialogTitle>{t('navigator.renameTitle')}</DialogTitle>
-              <DialogDescription>{t('navigator.renameDescription')}</DialogDescription>
-            </DialogHeader>
-            <Input
-              autoFocus
-              value={renameValue}
-              aria-label={t('navigator.pageName')}
-              className='mt-4'
-              onChange={(event) => setRenameValue(event.currentTarget.value)}
-            />
-            <DialogFooter className='mt-4'>
-              <Button type='button' variant='ghost' onClick={closeRename}>
-                {t('common.cancel')}
-              </Button>
-              <Button type='submit' disabled={!renameValue.trim()}>
-                {t('navigator.rename')}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('navigator.deleteTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('navigator.deleteDescription', {
+                page: t('navigator.pageNumber', { number: pageToDelete?.number }),
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              variant='destructive'
+              onClick={() => {
+                setConfirmingDelete(false)
+                if (pageToDelete !== null) deletePage(pageToDelete.page)
+              }}
+            >
+              {t('navigator.delete')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }
@@ -465,7 +278,7 @@ function PageImportMenu({
   onImport,
 }: {
   importing: boolean
-  onImport: (source: PageImportSource) => void
+  onImport: (source: ImportSource) => void
 }) {
   const { t } = useTranslation()
   const icon = importing ? (
@@ -517,123 +330,161 @@ function PageImportMenu({
 
 function PageItem({
   page,
+  index,
+  revision,
   active,
   selected,
   dragged,
-  onIntent,
+  target,
   onSelect,
-  onDragStart,
-  onDragEnd,
-  onRename,
+  onRun,
   onDelete,
-  onDeleteSelection,
-  onDrop,
 }: {
   page: PageSummary
+  index: number
+  /** The project's revision when a change last named this page, so its thumbnail follows its
+   * edits. */
+  revision: string | undefined
   active: boolean
   selected: boolean
   dragged: boolean
-  onIntent?: () => void
+  target: boolean
   onSelect: (additive: boolean, range: boolean) => void
-  onDragStart: () => void
-  onDragEnd: () => void
-  onRename: () => void
+  onRun: (stage: Stage) => void
   onDelete: () => void
-  onDeleteSelection?: () => void
-  onDrop: () => void
 }) {
   const { t } = useTranslation()
+  const name = t('navigator.pageNumber', { number: index + 1 })
+  const handle = useDraggable({ id: page.id })
+  const { setNodeRef } = useDroppable({ id: page.id })
+  // A press on the page's own buttons and menus doesn't drag it.
+  const { onPointerDown, ...listeners } = handle.listeners ?? {}
 
-  // Right-clicking a page inside a multi-page selection acts on the whole selection, like a file manager.
   return (
+    // A right-click on the page opens the menu its button does.
     <ContextMenu>
-      <ContextMenuTrigger
-        render={
-          <article
-            draggable
-            data-active={active}
-            data-selected={selected}
-            className={cn(
-              'group grid cursor-default grid-cols-[48px_minmax(0,1fr)] gap-2.5 rounded-xl p-1.5 transition-colors select-none',
-              active
-                ? 'bg-primary/[0.09] hover:bg-primary/[0.09]'
-                : selected
-                  ? 'bg-foreground/[0.06] hover:bg-foreground/[0.08]'
-                  : 'hover:bg-foreground/[0.045]',
-              'data-[popup-open]:ring-1 data-[popup-open]:ring-primary/60 data-[popup-open]:ring-inset',
-              dragged && 'opacity-50',
-            )}
-            onPointerEnter={onIntent}
-            onFocus={onIntent}
-            onClick={(event) => {
-              if ((event.target as HTMLElement).closest('button,[role="menuitem"]')) return
-              onSelect(event.ctrlKey || event.metaKey, event.shiftKey)
-            }}
-            onDoubleClick={onRename}
-            onDragStart={onDragStart}
-            onDragEnd={onDragEnd}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault()
-              onDrop()
-            }}
-          />
-        }
-      >
-        <div className='grid h-16 w-12 place-items-center overflow-hidden rounded-lg bg-[var(--surface-well)]'>
-          {page.source_asset ? (
-            <PageThumbnail page={page.id} asset={page.source_asset} label={page.label} />
-          ) : (
-            <span className='text-[9px] text-muted-foreground'>{t('navigator.noImage')}</span>
+      <ContextMenuTrigger>
+        <article
+          ref={(element) => {
+            handle.setNodeRef(element)
+            setNodeRef(element)
+          }}
+          {...listeners}
+          onPointerDown={(event) => {
+            if (!(event.target as HTMLElement).closest('button,[role="menuitem"]')) {
+              onPointerDown?.(event)
+            }
+          }}
+          data-page={page.id}
+          data-page-index={index}
+          data-active={active}
+          data-selected={selected}
+          className={cn(
+            'group grid cursor-default grid-cols-[48px_minmax(0,1fr)] gap-2.5 rounded-xl p-1.5 transition-colors select-none',
+            active
+              ? 'bg-primary/[0.09] hover:bg-primary/[0.09]'
+              : selected
+                ? 'bg-foreground/[0.06] hover:bg-foreground/[0.08]'
+                : 'hover:bg-foreground/[0.045]',
+            dragged && 'opacity-50',
+            target && !dragged && 'ring-2 ring-primary/60',
           )}
-        </div>
-        <div className='min-w-0 py-0.5'>
-          <div className='flex items-start gap-1'>
-            <span className='min-w-0 flex-1 truncate text-[10px] font-medium'>{page.label}</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant='ghost'
-                    size='icon-xs'
-                    aria-label={t('navigator.actionsFor', { page: page.label })}
-                    className='-mt-1 shrink-0 opacity-0 shadow-none group-hover:opacity-100 aria-expanded:opacity-100'
-                  />
-                }
-              >
-                <MoreHorizontal />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align='end'>
-                <DropdownMenuItem onClick={onRename}>{t('navigator.rename')}</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant='destructive' onClick={onDelete}>
-                  <Trash2 /> {t('navigator.delete')}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+          onClick={(event) => {
+            if ((event.target as HTMLElement).closest('button,[role="menuitem"]')) return
+            onSelect(event.ctrlKey || event.metaKey, event.shiftKey)
+          }}
+        >
+          <div className='grid h-16 w-12 place-items-center overflow-hidden rounded-lg bg-[var(--surface-well)]'>
+            {page.background ? (
+              <PageThumbnail
+                page={page.id}
+                version={revision ?? page.background.file}
+                label={name}
+              />
+            ) : (
+              <span className='text-[9px] text-muted-foreground'>{t('navigator.noImage')}</span>
+            )}
           </div>
-          <p className='mt-1 text-[9px] leading-3.5 text-muted-foreground'>
-            {t('navigator.layerCount', { count: page.layer_count })}
-          </p>
-          <p className='mt-1 text-[9px] text-muted-foreground tabular-nums'>
-            {page.size.width} × {page.size.height}
-          </p>
-        </div>
+          <div className='min-w-0 py-0.5'>
+            <div className='flex items-start gap-1'>
+              <span className='min-w-0 flex-1 truncate text-[10px] font-medium'>{name}</span>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant='ghost'
+                      size='icon-xs'
+                      aria-label={t('navigator.actionsFor', { page: name })}
+                      className='-mt-1 shrink-0 opacity-0 shadow-none group-hover:opacity-100 aria-expanded:opacity-100'
+                    />
+                  }
+                >
+                  <MoreHorizontal />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align='end' className={pageMenu}>
+                  <PageActions
+                    Item={DropdownMenuItem}
+                    Separator={DropdownMenuSeparator}
+                    onRun={onRun}
+                    onDelete={onDelete}
+                  />
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <p className='mt-1 text-[9px] text-muted-foreground tabular-nums'>
+              {page.size.width} × {page.size.height}
+            </p>
+          </div>
+        </article>
       </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem disabled={Boolean(onDeleteSelection)} onClick={onRename}>
-          {t('navigator.rename')}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem variant='destructive' onClick={onDeleteSelection ?? onDelete}>
-          <Trash2 /> {t('navigator.delete')}
-        </ContextMenuItem>
+      <ContextMenuContent className={pageMenu}>
+        <PageActions
+          Item={ContextMenuItem}
+          Separator={ContextMenuSeparator}
+          onRun={onRun}
+          onDelete={onDelete}
+        />
       </ContextMenuContent>
     </ContextMenu>
   )
 }
 
-function PageThumbnail({ page, asset, label }: { page: string; asset: string; label: string }) {
+/** A compact menu, as the rail's import menu is. */
+const pageMenu = 'w-auto min-w-20 border border-border/50 p-0.5 shadow-sm ring-0'
+const pageMenuItem =
+  'min-h-7 gap-1 px-1.5 py-0.5 text-[11px] [&_svg:not([class*="size-"])]:size-3.5'
+
+/** A page's actions, as the items of the menu `Item` and `Separator` belong to: each pipeline
+ * stage on the page alone, in the pipeline's order, then deleting it. */
+function PageActions({
+  Item,
+  Separator,
+  onRun,
+  onDelete,
+}: {
+  Item: typeof DropdownMenuItem | typeof ContextMenuItem
+  Separator: typeof DropdownMenuSeparator | typeof ContextMenuSeparator
+  onRun: (stage: Stage) => void
+  onDelete: () => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <>
+      {pipelineStages.map((stage) => (
+        <Item key={stage} className={pageMenuItem} onClick={() => onRun(stage)}>
+          {t(`navigator.run.${stage}`)}
+        </Item>
+      ))}
+      <Separator />
+      <Item variant='destructive' className={pageMenuItem} onClick={onDelete}>
+        {t('navigator.delete')}
+      </Item>
+    </>
+  )
+}
+
+/** The page as it renders, fetched again when `version` changes. */
+function PageThumbnail({ page, version, label }: { page: string; version: string; label: string }) {
   const { t } = useTranslation()
   const [source, setSource] = useState<string | null>(null)
   const [settled, setSettled] = useState(false)
@@ -642,11 +493,11 @@ function PageThumbnail({ page, asset, label }: { page: string; asset: string; la
     setSettled(false)
     const timeout = window.setTimeout(() => setSettled(true), 100)
     return () => window.clearTimeout(timeout)
-  }, [asset])
+  }, [version])
 
   const thumbnail = useQuery({
-    queryKey: ['thumbnail', asset],
-    queryFn: async () => new Uint8Array(await call(commands.getThumbnail, page)),
+    queryKey: ['thumbnail', page, version],
+    queryFn: async () => new Uint8Array(await call(commands.getPageThumbnail, page)),
     enabled: settled,
     staleTime: Number.POSITIVE_INFINITY,
     notifyOnChangeProps: ['data'],

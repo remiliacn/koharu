@@ -2,26 +2,26 @@
 
 import {
   Brush,
+  createLucideIcon,
   Eraser,
-  GripHorizontal,
   Hand,
+  Lasso,
   Minus,
   MousePointer2,
   Pipette,
   Plus,
-  ScanEye,
-  Sparkles,
+  SplinePointer,
+  SquareDashed,
   Type,
 } from 'lucide-react'
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ColorWell } from '@/components/controls/ColorWell'
 import { usePage } from '@/lib/queries'
 import {
-  isBrushTool,
   maxBrushDiameter,
   MIN_BRUSH_DIAMETER,
+  toolKeys,
   useKoharuStore,
   type CanvasTool,
 } from '@/lib/store'
@@ -41,15 +41,44 @@ import {
 } from '@koharu/ui/components/popover'
 import { Slider } from '@koharu/ui/components/slider'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@koharu/ui/components/tooltip'
-import { cn } from '@koharu/ui/lib/utils'
+
+/** Photoshop's Remove tool icon, the Spot Healing Brush's band-aid across the corner with a
+ * sparkle, drawn from Lucide's band-aid and its sparkles' plus. */
+const Remove = createLucideIcon('remove-tool', [
+  [
+    'rect',
+    {
+      x: '5',
+      y: '9',
+      width: '17',
+      height: '9',
+      rx: '2',
+      transform: 'rotate(-45 13.5 13.5)',
+      key: 'band',
+    },
+  ],
+  ['path', { d: 'M10.5 9v9M16.5 9v9', transform: 'rotate(-45 13.5 13.5)', key: 'pad' }],
+  [
+    'path',
+    {
+      d: 'M12.5 12.5h.01M14.5 12.5h.01M12.5 14.5h.01M14.5 14.5h.01',
+      transform: 'rotate(-45 13.5 13.5)',
+      key: 'holes',
+    },
+  ],
+  ['path', { d: 'M5 1.5v5M2.5 4h5', key: 'sparkle' }],
+])
 
 const tools = [
   ['select', MousePointer2],
+  ['direct_select', SplinePointer],
+  ['marquee', SquareDashed],
+  ['lasso', Lasso],
   ['text', Type],
   ['draw', Brush],
   ['eraser', Eraser],
   ['color_picker', Pipette],
-  ['remove', Sparkles],
+  ['remove', Remove],
   ['pan', Hand],
 ] as const satisfies ReadonlyArray<readonly [CanvasTool, typeof MousePointer2]>
 
@@ -60,51 +89,13 @@ export function ToolBar() {
   const brush = useKoharuStore((state) => state.brush)
   const setTool = useKoharuStore((state) => state.setTool)
   const setBrush = useKoharuStore((state) => state.setBrush)
-  const shortcuts = useKoharuStore((state) => state.shortcuts)
-  const hasBrush = isBrushTool(active)
-  const toolbar = useRef<HTMLElement>(null)
-  const { position, grip } = useToolBarDrag(toolbar)
 
   return (
-    <aside
-      ref={toolbar}
-      data-testid='toolbar'
-      className={cn(
-        'absolute z-20 flex w-11 flex-col rounded-2xl border border-border bg-[var(--surface-floating)] p-1 shadow-[var(--shadow-toolrail)]',
-        !position && 'top-3 left-3',
-      )}
-      style={
-        position
-          ? {
-              left: `min(${position.x}px, calc(100% - 2.75rem))`,
-              top: `min(${position.y}px, calc(100% - 2rem))`,
-            }
-          : undefined
-      }
-    >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <div
-              aria-label={t('tools.moveToolbar')}
-              className='flex h-3.5 cursor-grab touch-none items-center justify-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing'
-              {...grip}
-            />
-          }
-        >
-          <GripHorizontal className='size-3.5' />
-        </TooltipTrigger>
-        <TooltipContent side='right'>{t('tools.moveToolbar')}</TooltipContent>
-      </Tooltip>
+    <aside className='absolute top-3 left-3 z-20 flex w-11 flex-col rounded-2xl border border-border bg-[var(--surface-floating)] p-1 shadow-[var(--shadow-toolrail)]'>
       <div className='flex flex-col items-center py-0.5'>
         {tools.map(([tool, Icon], index) => (
           <div key={tool} className='contents'>
-            {index === tools.length - 1 && (
-              <>
-                <InpaintMaskToggle disabled={!page} />
-                <span className='my-1 h-px w-5 bg-border' />
-              </>
-            )}
+            {index === tools.length - 1 && <span className='my-1 h-px w-5 bg-border' />}
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -124,117 +115,21 @@ export function ToolBar() {
               </TooltipTrigger>
               <TooltipContent side='right'>
                 {t(`tools.${tool}`)}
-                <span className='ml-2 opacity-60'>{shortcuts[tool].toUpperCase()}</span>
+                <span className='ml-2 opacity-60'>{toolKeys[tool].toUpperCase()}</span>
               </TooltipContent>
             </Tooltip>
           </div>
         ))}
       </div>
 
-      {hasBrush && (
-        <div className='flex flex-col items-center gap-1 border-t border-border/80 py-1.5'>
-          {active === 'draw' && (
-            <ColorWell value={brush.color} onChange={(color) => setBrush({ ...brush, color })} />
-          )}
-          <BrushSize
-            value={brush.diameter}
-            onChange={(diameter) => setBrush({ ...brush, diameter })}
-          />
-        </div>
-      )}
+      <div className='flex flex-col items-center gap-1 border-t border-border/80 py-1.5'>
+        <ColorWell value={brush.color} onChange={(color) => setBrush({ ...brush, color })} />
+        <BrushSize
+          value={brush.diameter}
+          onChange={(diameter) => setBrush({ ...brush, diameter })}
+        />
+      </div>
     </aside>
-  )
-}
-
-function useToolBarDrag(toolbar: RefObject<HTMLElement | null>) {
-  const [position, setPosition] = useState<{ x: number; y: number } | null>(null)
-  const drag = useRef<{ pointer: number; offsetX: number; offsetY: number } | null>(null)
-
-  const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    const element = toolbar.current
-    if (event.button !== 0 || drag.current || !element) return
-    event.preventDefault()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    const bounds = element.getBoundingClientRect()
-    drag.current = {
-      pointer: event.pointerId,
-      offsetX: event.clientX - bounds.left,
-      offsetY: event.clientY - bounds.top,
-    }
-  }
-
-  const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
-    const current = drag.current
-    const element = toolbar.current
-    const container = element?.offsetParent
-    if (current?.pointer !== event.pointerId || !element || !(container instanceof HTMLElement)) {
-      return
-    }
-    const bounds = container.getBoundingClientRect()
-    setPosition({
-      x: clamp(
-        event.clientX - bounds.left - current.offsetX,
-        0,
-        Math.max(0, bounds.width - element.offsetWidth),
-      ),
-      y: clamp(
-        event.clientY - bounds.top - current.offsetY,
-        0,
-        Math.max(0, bounds.height - element.offsetHeight),
-      ),
-    })
-  }
-
-  const finish = (event: ReactPointerEvent<HTMLElement>) => {
-    if (drag.current?.pointer !== event.pointerId) return
-    drag.current = null
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-  }
-
-  return {
-    position,
-    grip: {
-      onPointerDown,
-      onPointerMove,
-      onPointerUp: finish,
-      onPointerCancel: finish,
-      onLostPointerCapture: finish,
-    },
-  }
-}
-
-function InpaintMaskToggle({ disabled }: { disabled: boolean }) {
-  const { t } = useTranslation()
-  const visible = useKoharuStore((state) => state.inpaintMaskVisible)
-  const setVisible = useKoharuStore((state) => state.setInpaintMaskVisible)
-  const shortcut = useKoharuStore((state) => state.shortcuts.inpaintMask)
-
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type='button'
-            variant='ghost'
-            size='icon'
-            disabled={disabled}
-            aria-label={t('menu.inpaintMask')}
-            aria-pressed={visible}
-            data-active={visible}
-            className='relative text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-30 data-[active=true]:bg-accent data-[active=true]:text-accent-foreground'
-            onClick={() => setVisible(!visible)}
-          />
-        }
-      >
-        <ScanEye className='size-4' />
-      </TooltipTrigger>
-      <TooltipContent side='right'>
-        {t('menu.inpaintMask')}
-        <span className='ml-2 opacity-60'>{shortcut.toUpperCase()}</span>
-      </TooltipContent>
-    </Tooltip>
   )
 }
 
@@ -243,6 +138,9 @@ function BrushSize({ value, onChange }: { value: number; onChange: (value: numbe
   const roundedValue = Math.round(value)
   const page = usePage().data
   const maxSize = maxBrushDiameter(page?.size ?? { width: 2048, height: 2048 })
+  // Photoshop's brush picker shows the tip over its size; the tip grows with the size, up to
+  // its box at the page's largest brush.
+  const tip = clamp(2 + (16 * value) / maxSize, 2, 18)
 
   return (
     <Popover>
@@ -256,10 +154,13 @@ function BrushSize({ value, onChange }: { value: number; onChange: (value: numbe
                   variant='ghost'
                   size='icon'
                   aria-label={t('tools.brushSizePixels', { size: roundedValue })}
-                  className='size-8 rounded-xl font-sans text-[11px] leading-none font-medium tracking-[-0.02em] text-muted-foreground tabular-nums hover:bg-foreground/[0.06] hover:text-foreground'
+                  className='h-auto w-8 flex-col gap-1 rounded-lg py-1.5 font-sans text-[11px] leading-none font-medium tracking-[-0.02em] text-muted-foreground tabular-nums hover:bg-foreground/[0.06] hover:text-foreground'
                 />
               }
             >
+              <span className='grid size-[18px] place-items-center'>
+                <span className='rounded-full bg-current' style={{ width: tip, height: tip }} />
+              </span>
               {roundedValue}
             </TooltipTrigger>
           }

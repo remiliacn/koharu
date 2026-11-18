@@ -1,105 +1,44 @@
-import type {
-  DetectionModel,
-  InpaintingModel,
-  OcrModel,
-  PipelineConfig,
-  Stage,
-} from '@koharu/bridge/protocol'
+import type { TFunction } from 'i18next'
 
-export type PipelineModel = DetectionModel | OcrModel | InpaintingModel
-export type ModelStage = Exclude<Stage, 'translation'>
-export type ModelName = PipelineModel['model']
+import type { Detector, Inpainter, Recognizer } from '@koharu/ipc/protocol'
 
-export const modelOptions = {
-  detection: ['koharu-layout-rfdetr-seg-2xl'],
-  ocr: ['paddleocr-vl-1.6', 'paddleocr-vl-manga', 'manga-ocr', 'baberu-ocr', 'hayai-ocr'],
-  inpainting: ['lama', 'aot-inpainting', 'flux2-klein', 'rorem-mixed'],
-} satisfies Record<ModelStage, ModelName[]>
+/** The pipeline's models by id, as the backend names them; product names stay untranslated. */
+export const detectors: Record<Detector, string> = {
+  'koharu-layout-highres': 'Koharu Layout HighRes',
+}
 
-export const modelNames: Record<ModelName, string> = {
-  'koharu-layout-rfdetr-seg-2xl': 'Koharu Layout RF-DETR Seg 2XL',
-  'paddleocr-vl-1.6': 'PaddleOCR-VL 1.6',
-  'paddleocr-vl-manga': 'PaddleOCR-VL For Manga',
-  'manga-ocr': 'Manga OCR',
+export const recognizers: Record<Recognizer, string> = {
+  'manga-ocr-ar': 'Manga OCR AR',
   'baberu-ocr': 'Baberu OCR',
   'hayai-ocr': 'Hayai OCR',
+}
+
+export const inpainters: Record<Inpainter, string> = {
   lama: 'LaMa',
-  'aot-inpainting': 'AOT Inpainting',
-  'flux2-klein': 'FLUX.2 Klein',
-  'rorem-mixed': 'RORem Mixed',
+  'flux3-klein': 'FLUX.3 Klein',
+  'moss-image': 'MOSS-Image',
+  'qwen-image': 'Qwen-Image 2.1',
 }
 
-export function defaultModel(model: ModelName): PipelineModel {
-  switch (model) {
-    case 'koharu-layout-rfdetr-seg-2xl':
-      return { model, text_threshold: null, bubble_threshold: null, panel_threshold: null }
-    case 'paddleocr-vl-1.6':
-    case 'paddleocr-vl-manga':
-    case 'manga-ocr':
-    case 'baberu-ocr':
-    case 'hayai-ocr':
-    case 'lama':
-    case 'aot-inpainting':
-      return { model }
-    case 'flux2-klein':
-      return { model, prompt: 'Remove only the lettering. Keep everything else unchanged, including speech bubbles, their translucency, and the artwork visible through them.' }
-    case 'rorem-mixed':
-      return { model }
-  }
+/** Vendors by rig's names, as their makers write them; others show their own name. */
+export const vendorNames: Record<string, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  'gcp.gemini': 'Google Gemini',
+  xai: 'xAI',
+  deepseek: 'DeepSeek',
+  minimax: 'MiniMax',
+  openrouter: 'OpenRouter',
+  chatgpt: 'ChatGPT',
+  grok: 'Grok',
+  ollama: 'Ollama',
+  lmstudio: 'LM Studio',
+  koharu: 'Koharu',
 }
 
-export function stageModel(config: PipelineConfig, stage: ModelStage): PipelineModel {
-  const selected =
-    stage === 'detection' ? config.detection : stage === 'ocr' ? config.ocr : config.inpainting
-  if (selected) {
-    const profile = config.processor?.[selected.model as keyof typeof config.processor]
-    return profile ? ({ model: selected.model, ...profile } as PipelineModel) : selected
-  }
-  return defaultModel(modelOptions[stage][0]!)
-}
-
-export function replaceStage(
-  config: PipelineConfig,
-  stage: ModelStage,
-  model: PipelineModel,
-): PipelineConfig {
-  switch (stage) {
-    case 'detection':
-      return {
-        ...config,
-        detection: model as DetectionModel,
-        processor: {
-          ...config.processor,
-          'koharu-layout-rfdetr-seg-2xl':
-            model.model === 'koharu-layout-rfdetr-seg-2xl'
-              ? {
-                  text_threshold: model.text_threshold ?? null,
-                  bubble_threshold: model.bubble_threshold ?? null,
-                  panel_threshold: model.panel_threshold ?? null,
-                }
-              : (config.processor?.['koharu-layout-rfdetr-seg-2xl'] ?? null),
-        },
-      }
-    case 'ocr':
-      return { ...config, ocr: model as OcrModel }
-    case 'inpainting':
-      return {
-        ...config,
-        inpainting: model as InpaintingModel,
-        processor: {
-          ...config.processor,
-          ...(model.model === 'flux2-klein'
-            ? { 'flux2-klein': { prompt: model.prompt ?? undefined } }
-            : {}),
-          ...(model.model === 'rorem-mixed'
-            ? {
-                'rorem-mixed': {
-                  prompt: model.prompt ?? undefined,
-                  negative_prompt: model.negative_prompt ?? undefined,
-                },
-              }
-            : {}),
-        },
-      }
-  }
+/** The vendor's name: its maker's, or for an OpenAI-compatible server, which no one makes, a
+ * description in the interface's language. */
+export function vendorName(vendor: string, t: TFunction): string {
+  if (vendor === 'openai-compatible') return t('settings.providers.openaiCompatible')
+  return vendorNames[vendor] ?? vendor
 }

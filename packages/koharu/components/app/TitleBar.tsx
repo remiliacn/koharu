@@ -1,5 +1,6 @@
 'use client'
 
+import * as Sentry from '@sentry/nextjs'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { FilePlus2, FolderOpen, LoaderCircle, Settings } from 'lucide-react'
 import Image from 'next/image'
@@ -8,24 +9,14 @@ import { useTranslation } from 'react-i18next'
 
 import { AboutDialog } from '@/components/app/AboutDialog'
 import { useMacOS, WindowControls } from '@/components/app/WindowChrome'
-import { call } from '@/lib/backend'
-import { selectableLayer } from '@/lib/geometry'
-import {
-  pageKey,
-  pagesKey,
-  projectKey,
-  refresh,
-  useCommand,
-  useImportPages,
-  usePage,
-  usePages,
-  useProject,
-} from '@/lib/queries'
+import { call, dispatch } from '@/lib/backend'
+import { useCommand, useImportPages, usePage, useProject } from '@/lib/queries'
+import { deleteSelection } from '@/lib/scene'
 import { useKoharuStore } from '@/lib/store'
-import { commands, type Operation, type Scope, type Stage } from '@koharu/bridge/protocol'
+import { commands } from '@koharu/ipc/protocol'
 import {
   Menubar,
-  MenubarCheckboxItem,
+  MenubarCheckboxItem as UiMenubarCheckboxItem,
   MenubarContent as UiMenubarContent,
   MenubarItem as UiMenubarItem,
   MenubarMenu,
@@ -43,17 +34,16 @@ export function TitleBar() {
   const [aboutOpen, setAboutOpen] = useState(false)
   const macOS = useMacOS()
   const project = useProject().data
-  const pagesQuery = usePages(Boolean(project))
   const pageQuery = usePage(Boolean(project))
-  const pages = project ? (pagesQuery.data ?? []) : []
+  const pages = project?.pages ?? []
   const page = project ? (pageQuery.data ?? null) : null
-  const selectedPages = useKoharuStore((state) => state.selectedPages)
+  const pageNumber = page ? pages.findIndex((candidate) => candidate.id === page.id) + 1 : 0
+  const history = project?.history
+  const historyOpen = useKoharuStore((state) => state.historyOpen)
+  const setHistoryOpen = useKoharuStore((state) => state.setHistoryOpen)
   const selectedLayers = useKoharuStore((state) => state.selectedLayers)
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
-  const requestCanvasFit = useKoharuStore((state) => state.requestCanvasFit)
-  const inpaintMaskVisible = useKoharuStore((state) => state.inpaintMaskVisible)
-  const setInpaintMaskVisible = useKoharuStore((state) => state.setInpaintMaskVisible)
   const { importPages, importing } = useImportPages()
   const { run: exportProject, busy: exporting } = useCommand(
     ['export-project'],
@@ -61,10 +51,46 @@ export function TitleBar() {
     'menu.export',
   )
 
-  const run = (scope: Scope, operation: Operation = { operation: 'full' }) =>
-    void call(commands.process, scope, operation).catch(() => undefined)
+  const psdLabels = {
+    background: t('psd.background'),
+    cleanup: t('psd.cleanup'),
+    outline: t('psd.outline'),
+  }
 
-  const closeProject = () => void call(commands.closeProject).catch(() => undefined)
+  const closeProject = () => void call(commands.close).catch(() => undefined)
+
+  /** Sentry's feedback form, in the interface's language; it leaves the page when it closes. */
+  const sendFeedback = async () => {
+    const feedback = Sentry.getFeedback()
+    if (!feedback) return
+    const form = await feedback.createForm({
+      formTitle: t('feedback.title'),
+      nameLabel: t('feedback.name'),
+      namePlaceholder: t('feedback.namePlaceholder'),
+      emailLabel: t('feedback.email'),
+      emailPlaceholder: t('feedback.emailPlaceholder'),
+      messageLabel: t('feedback.message'),
+      messagePlaceholder: t('feedback.messagePlaceholder'),
+      isRequiredLabel: t('feedback.required'),
+      submitButtonLabel: t('feedback.submit'),
+      cancelButtonLabel: t('feedback.cancel'),
+      confirmButtonLabel: t('feedback.confirm'),
+      addScreenshotButtonLabel: t('feedback.addScreenshot'),
+      removeScreenshotButtonLabel: t('feedback.removeScreenshot'),
+      highlightToolText: t('feedback.highlight'),
+      hideToolText: t('feedback.hide'),
+      removeHighlightText: t('feedback.removeHighlight'),
+      successMessageText: t('feedback.sent'),
+      errorEmptyMessageText: t('feedback.emptyMessage'),
+      errorNoClientText: t('feedback.noClient'),
+      errorTimeoutText: t('feedback.timeout'),
+      errorForbiddenText: t('feedback.forbidden'),
+      errorGenericText: t('feedback.failed'),
+      onFormClose: () => form.removeFromDom(),
+    })
+    form.appendToDom()
+    form.open()
+  }
 
   return (
     <>
@@ -125,7 +151,7 @@ export function TitleBar() {
                     <MenubarItem
                       key={format}
                       disabled={exporting}
-                      onClick={() => exportProject(format)}
+                      onClick={() => exportProject(format, psdLabels)}
                     >
                       {format.toUpperCase()}…
                     </MenubarItem>
@@ -148,23 +174,15 @@ export function TitleBar() {
             <MenubarTrigger>{t('menu.edit')}</MenubarTrigger>
             <MenubarContent>
               <MenubarItem
-                disabled={!project?.can_undo}
-                onClick={() =>
-                  void call(commands.undo)
-                    .then(() => refresh(projectKey, pagesKey, pageKey))
-                    .catch(() => undefined)
-                }
+                disabled={!history || history.current === 0}
+                onClick={() => dispatch(commands.undo)}
               >
                 {t('menu.undo')}
                 <MenubarShortcut>Ctrl+Z</MenubarShortcut>
               </MenubarItem>
               <MenubarItem
-                disabled={!project?.can_redo}
-                onClick={() =>
-                  void call(commands.redo)
-                    .then(() => refresh(projectKey, pagesKey, pageKey))
-                    .catch(() => undefined)
-                }
+                disabled={!history || history.current >= history.steps.length}
+                onClick={() => dispatch(commands.redo)}
               >
                 {t('menu.redo')}
                 <MenubarShortcut>Ctrl+Shift+Z</MenubarShortcut>
@@ -172,9 +190,7 @@ export function TitleBar() {
               <MenubarSeparator />
               <MenubarItem
                 disabled={!page}
-                onClick={() =>
-                  selectLayers(page?.layers.filter(selectableLayer).map((layer) => layer.id) ?? [])
-                }
+                onClick={() => selectLayers(page?.layers.map((layer) => layer.id) ?? [])}
               >
                 {t('menu.selectAllLayers')}
                 <MenubarShortcut>Ctrl+A</MenubarShortcut>
@@ -182,72 +198,33 @@ export function TitleBar() {
               <MenubarItem
                 disabled={selectedLayers.length === 0}
                 variant='destructive'
-                onClick={() =>
-                  void call(commands.deleteLayers, selectedLayers)
-                    .then(() => refresh(projectKey, pagesKey, pageKey))
-                    .catch(() => undefined)
-                }
+                onClick={() => dispatch(deleteSelection, selectedLayers, page?.layers ?? [])}
               >
                 {t('menu.delete')}
                 <MenubarShortcut>Del</MenubarShortcut>
               </MenubarItem>
-            </MenubarContent>
-          </MenubarMenu>
-
-          <MenubarMenu>
-            <MenubarTrigger>{t('menu.process')}</MenubarTrigger>
-            <MenubarContent>
-              <MenubarItem
-                disabled={!project || pages.length === 0}
-                onClick={() => run({ scope: 'project' })}
-              >
-                {t('menu.processProject')}
-              </MenubarItem>
-              <MenubarItem
-                disabled={selectedPages.length === 0}
-                onClick={() => run({ scope: 'pages', value: selectedPages })}
-              >
-                {t('menu.processPages')}
-              </MenubarItem>
-              <MenubarItem
-                disabled={selectedLayers.length === 0}
-                onClick={() =>
-                  run(
-                    { scope: 'entities', value: selectedLayers },
-                    { operation: 'stages', stages: ['ocr', 'translation'] },
-                  )
-                }
-              >
-                {t('menu.processLayers')}
-              </MenubarItem>
               <MenubarSeparator />
-              {(['detection', 'ocr', 'translation', 'inpainting'] as Stage[]).map((stage) => (
-                <MenubarItem
-                  key={stage}
-                  disabled={!project || pages.length === 0}
-                  onClick={() => run({ scope: 'project' }, { operation: 'through', stage })}
-                >
-                  {t('menu.runPhase', {
-                    phase: t(`phase.${stage}`),
-                  })}
-                </MenubarItem>
-              ))}
+              {/* Frees the GPU, as Photoshop's Edit → Purge frees memory. */}
+              <MenubarItem onClick={() => dispatch(commands.unload)}>
+                {t('menu.unloadModels')}
+              </MenubarItem>
             </MenubarContent>
           </MenubarMenu>
 
           <MenubarMenu>
             <MenubarTrigger>{t('menu.view')}</MenubarTrigger>
             <MenubarContent>
-              <MenubarItem disabled={!page} onClick={requestCanvasFit}>
+              <MenubarItem disabled={!page} onClick={() => dispatch(commands.fit)}>
                 {t('menu.fit')}
+                <MenubarShortcut>Ctrl+0</MenubarShortcut>
               </MenubarItem>
               <MenubarCheckboxItem
-                className='min-h-8 text-xs'
                 disabled={!page}
-                checked={inpaintMaskVisible}
-                onCheckedChange={setInpaintMaskVisible}
+                checked={historyOpen}
+                onCheckedChange={setHistoryOpen}
+                closeOnClick
               >
-                {t('menu.inpaintMask')}
+                {t('menu.history')}
               </MenubarCheckboxItem>
             </MenubarContent>
           </MenubarMenu>
@@ -267,6 +244,9 @@ export function TitleBar() {
               >
                 {t('menu.github')}
               </MenubarItem>
+              <MenubarItem onClick={() => void sendFeedback().catch(() => undefined)}>
+                {t('menu.feedback')}
+              </MenubarItem>
               <MenubarSeparator />
               <MenubarItem onClick={() => setAboutOpen(true)}>{t('menu.about')}</MenubarItem>
             </MenubarContent>
@@ -281,7 +261,7 @@ export function TitleBar() {
               {page && (
                 <>
                   <span className='mx-2'>/</span>
-                  <span>{page.label}</span>
+                  <span>{t('navigator.pageNumber', { number: pageNumber })}</span>
                 </>
               )}
             </span>
@@ -318,6 +298,22 @@ function MenubarItem({ className, ...props }: ComponentProps<typeof UiMenubarIte
     <UiMenubarItem
       className={cn(
         "min-h-8 gap-1.5 px-2 py-1 text-xs [&_svg:not([class*='size-'])]:size-3.5",
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+/** Its text in line with the other items', and its check where their shortcuts go. */
+function MenubarCheckboxItem({
+  className,
+  ...props
+}: ComponentProps<typeof UiMenubarCheckboxItem>) {
+  return (
+    <UiMenubarCheckboxItem
+      className={cn(
+        'min-h-8 pr-7 pl-2 text-xs [&>span:first-child]:right-2 [&>span:first-child]:left-auto',
         className,
       )}
       {...props}
