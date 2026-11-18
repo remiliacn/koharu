@@ -1,6 +1,8 @@
 //! The ops adding a page's detected parts: panels, balloons, and blocks, each
 //! block with its mask.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use image::{GrayImage, Luma, RgbImage};
 use imageproc::{distance_transform::Norm, morphology::dilate};
@@ -32,12 +34,53 @@ pub(super) struct Place {
 }
 
 /// The ops adding the layout's parts at the top of the page, before the
-/// layers left there, with each block's mask.
-pub(super) fn additions(found: &Found, page: PageId, model: &str) -> Result<Vec<Op>> {
+/// layers left there, with each block's mask kept out of `kept`, the blocks
+/// the page keeps, and the labels of the panels and balloons added.
+pub(super) fn additions(
+    found: &Found,
+    page: PageId,
+    model: &str,
+    kept: &[[f32; 4]],
+) -> Result<(Vec<Op>, Labels)> {
     let tree = Tree::new(found.layout);
-    let mut adding = Adding::new(found, page, model, None, &[]);
+    let mut adding = Adding::new(found, page, model, None, kept);
     adding.add(&tree.top, None)?;
-    Ok(adding.ops)
+    Ok((adding.ops, adding.labels_of))
+}
+
+/// Whether a kept block's source box holds lettering `bbox`'s centre: that
+/// lettering is the block's, and isn't added again.
+pub(super) fn claimed([x0, y0, x1, y1]: [f32; 4], kept: &[[f32; 4]]) -> bool {
+    let (x, y) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    kept.iter().any(|&[left, top, right, bottom]| {
+        (left..=right).contains(&x) && (top..=bottom).contains(&y)
+    })
+}
+
+/// The label each detected panel and balloon was added under, by its index
+/// in the layout.
+#[derive(Default)]
+pub(super) struct Labels {
+    panels: HashMap<usize, String>,
+    bubbles: HashMap<usize, String>,
+}
+
+impl Labels {
+    /// The added balloon whose outline holds `point`, else the added panel
+    /// whose box does.
+    pub(super) fn holding(&self, layout: &Layout, point: Point) -> Option<String> {
+        let bubble = self
+            .bubbles
+            .iter()
+            .find(|(at, _)| layout.bubbles[**at].outline.contains(point));
+        let panel = || {
+            self.panels.iter().find(|(at, _)| {
+                let [x0, y0, x1, y1] = layout.panels[**at].bbox.map(f64::from);
+                kurbo::Rect::new(x0, y0, x1, y1).contains(point)
+            })
+        };
+        bubble.or_else(panel).map(|(_, label)| label.clone())
+    }
 }
 
 /// The ops adding an area's lettering, which has no panel or balloon of its
@@ -67,6 +110,7 @@ struct Adding<'a> {
     kept: &'a [[f32; 4]],
     ops: Vec<Op>,
     labels: usize,
+    labels_of: Labels,
 }
 
 impl<'a> Adding<'a> {
@@ -87,19 +131,32 @@ impl<'a> Adding<'a> {
             kept,
             ops: Vec::new(),
             labels: 0,
+            labels_of: Labels::default(),
         }
     }
 
     fn add(&mut self, nodes: &[Node], parent: Option<&str>) -> Result<()> {
-        for (index, node) in nodes.iter().enumerate() {
+        // Lettering a kept block holds is skipped, so siblings count on.
+        let mut next = 0;
+        for node in nodes {
+            if let Part::Lettering(at) = node.part
+                && claimed(self.layout.lettering[at].bbox, self.kept)
+            {
+                continue;
+            }
             let label = format!("d{}", self.labels);
             self.labels += 1;
+            match node.part {
+                Part::Panel(at) => _ = self.labels_of.panels.insert(at, format!("${label}")),
+                Part::Bubble(at) => _ = self.labels_of.bubbles.insert(at, format!("${label}")),
+                Part::Lettering(_) => {}
+            }
             let (into, index) = match (parent, node.part, self.places) {
                 (None, Part::Lettering(at), Some(places)) => (
                     places[at].parent.map(|parent| parent.to_string()),
                     places[at].index,
                 ),
-                _ => (parent.map(|parent| format!("${parent}")), index),
+                _ => (parent.map(|parent| format!("${parent}")), next),
             };
             let (mut layer, score) = match node.part {
                 Part::Panel(at) => {
@@ -145,6 +202,7 @@ impl<'a> Adding<'a> {
                 });
             }
             self.add(&node.children, Some(&label))?;
+            next += 1;
         }
         Ok(())
     }

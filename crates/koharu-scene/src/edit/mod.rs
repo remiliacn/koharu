@@ -51,11 +51,14 @@ pub struct Edit {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Op {
     /// Add a page at `index`: of `size`, or made from an added file, which
-    /// becomes its background and gives it its size.
+    /// becomes its background and gives it its size, named after the file it
+    /// came from.
     #[schemars(skip)]
     AddPage {
         #[serde(default)]
         id: Option<Ref>,
+        #[serde(default)]
+        name: Option<String>,
         index: usize,
         #[serde(default)]
         size: Option<Size>,
@@ -316,10 +319,18 @@ impl Run<'_, '_> {
         match op {
             Op::AddPage {
                 id,
+                name,
                 index: at,
                 size,
                 background,
-            } => self.add_page(index, id.as_ref(), *at, *size, background.as_ref()),
+            } => self.add_page(
+                index,
+                id.as_ref(),
+                name.as_deref(),
+                *at,
+                *size,
+                background.as_ref(),
+            ),
             Op::SetBackground { page, background } => {
                 self.set_background(index, page, background.as_ref())
             }

@@ -24,6 +24,10 @@ const NUMBER: f64 = 16.0;
 /// How finely a curve is flattened, in viewport pixels.
 const TOLERANCE: f64 = 0.1;
 
+/// The page's inpainting masks while they show, in the fork's purple at its
+/// opacity, the colour the Remove brush's preview had.
+pub(crate) const MASKS: Rgba = Rgba([168.0 / 255.0, 85.0 / 255.0, 247.0 / 255.0, 116.0 / 255.0]);
+
 pub(crate) struct Overlay<'a, 'g> {
     drawing: &'a mut Drawing<'g>,
     view: &'a View,
@@ -136,6 +140,31 @@ impl<'a, 'g> Overlay<'a, 'g> {
             self.drawing.scene.pop_layer();
         }
         self.drawing.scene.pop_layer();
+        Ok(())
+    }
+
+    /// The coverage of `masks` in `tint`, at the tint's opacity however they
+    /// overlap.
+    pub fn masks(&mut self, page: Rect, masks: &[Frame], tint: Rgba) -> anyhow::Result<()> {
+        let to_screen = self.view.to_screen();
+        let area = to_screen * page.to_path(TOLERANCE);
+        let viewport = self.view.size().to_rect();
+        let Rgba([.., alpha]) = tint;
+        let scene = &mut self.drawing.scene;
+        scene.set_transform(Affine::IDENTITY);
+        scene.push_layer(Some(&area), None, Some(alpha), None, None);
+        for mask in masks {
+            mask.paint(to_screen, viewport, self.drawing)?;
+        }
+        let scene = &mut self.drawing.scene;
+        let within = BlendMode::new(Mix::Normal, Compose::SrcIn);
+        scene.set_transform(Affine::IDENTITY);
+        scene.push_layer(Some(&area), Some(within), None, None, None);
+        scene.set_fill_rule(Fill::NonZero);
+        scene.set_paint(color(tint).with_alpha(1.0));
+        scene.fill_path(&area);
+        scene.pop_layer();
+        scene.pop_layer();
         Ok(())
     }
 
@@ -270,6 +299,16 @@ impl<'a, 'g> Overlay<'a, 'g> {
 
     /// `frame` painted through `transform` in page space, then the camera,
     /// over what the viewport shows.
+    /// A text laid out, through `transform` from its own coordinates to the
+    /// page.
+    pub fn lettering(
+        &mut self,
+        lettering: &koharu_renderer::Lettering,
+        transform: Affine,
+    ) -> anyhow::Result<()> {
+        lettering.draw(self.drawing, self.view.to_screen() * transform)
+    }
+
     pub fn frame(&mut self, frame: &Frame, transform: Affine) -> anyhow::Result<()> {
         frame.paint(
             self.view.to_screen() * transform,

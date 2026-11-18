@@ -16,8 +16,9 @@ pub(crate) struct Conversation {
     /// The model, the target, and the prompt its history was written with.
     with: Option<(String, LanguageIdentifier, String)>,
     pub(super) context: Context,
-    /// A hosted model, connected for its first page.
-    hosted: Option<DynModel<Completion>>,
+    /// The hosted models, the translator's and its fallback's, each
+    /// connected for the first page it translates.
+    hosted: HashMap<String, DynModel<Completion>>,
     /// The last page's texts and their translations.
     pub(super) last: Option<(Vec<String>, Vec<String>)>,
 }
@@ -27,7 +28,7 @@ impl Conversation {
         Self {
             with: None,
             context: Context::new(prompts()),
-            hosted: None,
+            hosted: HashMap::new(),
             last: None,
         }
     }
@@ -46,16 +47,18 @@ impl Conversation {
         }
     }
 
-    /// The hosted model `config` names, connected for the first page.
+    /// The hosted model `reference` names, connected for the first page it
+    /// translates.
     pub(super) async fn hosted(
         &mut self,
-        config: &TranslatorConfig,
+        reference: &str,
+        vision: bool,
     ) -> anyhow::Result<DynModel<Completion>> {
-        if let Some(model) = &self.hosted {
+        if let Some(model) = self.hosted.get(reference) {
             return Ok(model.clone());
         }
-        let model = model::load(&config.model, config.vision).await?;
-        self.hosted = Some(model.clone());
+        let model = model::load(reference, vision).await?;
+        self.hosted.insert(reference.to_owned(), model.clone());
         Ok(model)
     }
 }

@@ -4,6 +4,7 @@ use koharu_ml::{
     lama::{self, Lama},
     moss_image::{self, MossImage},
     qwen_image::{self, QwenImage},
+    rorem_mixed::{self, RoremMixed, RoremMixedOptions},
 };
 use koharu_runtime::Device;
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,8 @@ pub enum Inpainter {
     MossImage,
     #[strum(to_string = "Qwen-Image 2.1")]
     QwenImage,
+    #[strum(to_string = "RORem")]
+    RoremMixed,
 }
 
 /// An inpainter, loaded.
@@ -121,6 +124,28 @@ impl Inpaint for QwenImage {
     }
 }
 
+impl Inpaint for RoremMixed {
+    /// RORem is SDXL: it reads a prompt describing the picture, not the
+    /// instruction the others take, so it keeps the prompts it was converted
+    /// with, as the fork's port did.
+    fn inference(&self, image: &RgbImage, mask: &GrayImage, _: &str) -> anyhow::Result<RgbImage> {
+        RoremMixed::inference(
+            self,
+            &DynamicImage::ImageRgb8(image.clone()),
+            mask,
+            rorem_mixed::DEFAULT_PROMPT,
+            rorem_mixed::DEFAULT_NEGATIVE_PROMPT,
+            &RoremMixedOptions::default(),
+        )
+    }
+
+    /// The fork's tiles: lettering up to 512 pixels with 128 around it,
+    /// which RORem redraws at its 512 square.
+    fn pass(&self) -> u32 {
+        768
+    }
+}
+
 /// `redrawn` back at `image`'s size: the diffusion models draw on their own
 /// grid.
 fn fitted(redrawn: RgbImage, image: &RgbImage) -> RgbImage {
@@ -137,6 +162,7 @@ pub(super) async fn load(model: Inpainter, device: &'static Device) -> anyhow::R
         Inpainter::Lama => Box::new(Lama::load(device).await?),
         Inpainter::Flux3Klein => Box::new(Flux3Klein::load(device).await?),
         Inpainter::MossImage => Box::new(MossImage::load(device).await?),
+        Inpainter::RoremMixed => Box::new(RoremMixed::load(device).await?),
         Inpainter::QwenImage => Box::new(QwenImage::load(device).await?),
     })
 }

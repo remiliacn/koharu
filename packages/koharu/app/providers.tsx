@@ -9,14 +9,7 @@ import { Updater } from '@/components/app/Updater'
 import ClientOnly from '@/components/ClientOnly'
 import { refreshModels, refreshPreferences } from '@/lib/backend'
 import i18n from '@/lib/i18n'
-import {
-  pageKey,
-  pagesKey,
-  projectKey,
-  queryClient,
-  refresh,
-  type ProjectView,
-} from '@/lib/queries'
+import { pageKey, projectKey, queryClient, refresh, type ProjectView } from '@/lib/queries'
 import {
   receiveCanvasSelection,
   receiveDownload,
@@ -56,9 +49,6 @@ export function Providers({ children }: { children: ReactNode }) {
         listen(events.page, receivePage),
         listen(events.selection, receiveCanvasSelection),
         listen(events.camera, (camera) => useKoharuStore.setState({ camera })),
-        listen(events.selectionBounds, (selectionBounds) =>
-          useKoharuStore.setState({ selectionBounds }),
-        ),
         listen(events.area, (area) => useKoharuStore.setState({ area })),
         listen(events.typing, (typing) => useKoharuStore.setState({ typing })),
         listen(events.color, (color) => receivePickedColor(rgbaToHex(color))),
@@ -146,8 +136,7 @@ function receivePage(page: PageId | null): void {
   void refresh(projectKey, pageKey).catch(() => undefined)
 }
 
-/** An edit, undo, or redo, from whichever writer: the project and its shown page are read again,
- * and so are the pages Story lists, which a change to one of their layers doesn't name. */
+/** An edit, undo, or redo, from whichever writer: the project and its shown page are read again. */
 function receiveChange(change: Change): void {
   queryClient.setQueryData<ProjectView | null>(projectKey, (project) =>
     project
@@ -160,7 +149,7 @@ function receiveChange(change: Change): void {
         }
       : project,
   )
-  void refresh(projectKey, pageKey, pagesKey).catch(() => undefined)
+  void refresh(projectKey, pageKey).catch(() => undefined)
 }
 
 function StartupBoundary({ children }: { children: ReactNode }) {

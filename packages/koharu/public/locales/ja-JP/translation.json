@@ -28,6 +28,7 @@
     "model": "モデル",
     "newChat": "新しいチャット",
     "placeholder": "Koharuにこのプロジェクトの作業を依頼…",
+    "properties": "プロパティ",
     "reasoning": "推論",
     "send": "送信",
     "thinking": "思考中…",
@@ -40,6 +41,7 @@
   },
   "canvas": {
     "empty": "ページを選択して開始します。",
+    "fit": "ウィンドウに合わせる",
     "notice": {
       "eraser_needs_raster": "消去するにはラスターレイヤーを選択してください。"
     }
@@ -172,6 +174,7 @@
     "borderColor": "縁取りの色",
     "borderWidth": "縁取り幅",
     "chooseFontSize": "フォントサイズを選択",
+    "color": "色",
     "decreaseBorderWidth": "縁取り幅を縮小",
     "font": "フォント",
     "fontSize": "フォントサイズ",
@@ -254,6 +257,7 @@
     "help": "ヘルプ",
     "history": "ヒストリー",
     "import": "ページを読み込む",
+    "inpaintMask": "インペイントマスクを表示",
     "redo": "やり直す",
     "selectAllLayers": "すべてのレイヤーを選択",
     "settings": "設定",
@@ -406,10 +410,17 @@
       "subscription": "サブスクリプション",
       "title": "プロバイダー"
     },
+    "shortcuts": {
+      "description": "テキスト入力欄にフォーカスがないとき、単一キーのショートカットを使用できます。",
+      "inputLabel": "{{action}}のショートカット",
+      "title": "ショートカット",
+      "tools": "ツール"
+    },
     "tabs": {
       "appearance": "外観",
       "pipeline": "パイプライン",
       "providers": "プロバイダー",
+      "shortcuts": "ショートカット",
       "typesetting": "レンダラー"
     },
     "title": "設定",
@@ -456,12 +467,6 @@
   },
   "status": {
     "zoom": "ズーム"
-  },
-  "story": {
-    "noText": "このページにはテキストがありません。",
-    "sfx": "効果音",
-    "title": "ストーリー",
-    "translate": "{{name}}を翻訳"
   },
   "tools": {
     "brushSize": "ブラシサイズ",

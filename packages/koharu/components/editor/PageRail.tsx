@@ -67,7 +67,7 @@ export function PageRail() {
   const [dragged, setDragged] = useState<{ page: string; target: number | null } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
   // The page Delete asks about, kept while its dialog closes so the dialog still names it.
-  const [pageToDelete, setPageToDelete] = useState<{ page: string; number: number } | null>(null)
+  const [pageToDelete, setPageToDelete] = useState<{ pages: string[]; number: number } | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const pageList = useRef<HTMLDivElement>(null)
   const rail = useRef<HTMLElement>(null)
@@ -155,13 +155,26 @@ export function PageRail() {
     }
   }
 
-  const deletePage = (page: string) =>
-    void call(deletePages, [page])
+  const deletePage = (targets: string[]) =>
+    void call(deletePages, targets)
       .then(() => {
-        selectPages(selected.filter((selectedPage) => selectedPage !== page))
-        if (active === page) selectLayers([])
+        selectPages(selected.filter((selectedPage) => !targets.includes(selectedPage)))
+        if (active && targets.includes(active)) selectLayers([])
       })
       .catch(() => undefined)
+
+  /** Delete asks about the selected pages, or the shown one when none is, as a file manager's
+   * Delete does. */
+  const askDelete = () => {
+    const targets = pages.filter((page) => selected.includes(page.id)).map((page) => page.id)
+    const chosen = targets.length ? targets : active ? [active] : []
+    if (!chosen.length) return
+    setPageToDelete({
+      pages: chosen,
+      number: pages.findIndex((page) => page.id === chosen[0]) + 1,
+    })
+    setConfirmingDelete(true)
+  }
 
   /** A page dropped on another takes its place; `move_page` counts its index after the page is
    * taken out, which is that place either way. */
@@ -233,9 +246,24 @@ export function PageRail() {
             }
           >
             <ScrollArea
-              className='min-h-0 flex-1'
+              // Focusable, so a click on a page focuses the list and Ctrl+A and Delete act on its
+              // pages, as a file manager's list does, rather than on the canvas's layers.
+              tabIndex={-1}
+              className='min-h-0 flex-1 outline-none'
               viewportClassName='px-1.5 py-1.5'
               viewportRef={pageList}
+              onKeyDown={(event) => {
+                if (event.key === 'Delete') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  askDelete()
+                  return
+                }
+                if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return
+                event.preventDefault()
+                event.stopPropagation()
+                selectPages(pages.map((page) => page.id))
+              }}
             >
               <div
                 className='relative w-full touch-none'
@@ -267,7 +295,7 @@ export function PageRail() {
                           )
                         }
                         onDelete={() => {
-                          setPageToDelete({ page: page.id, number: index + 1 })
+                          setPageToDelete({ pages: [page.id], number: index + 1 })
                           setConfirmingDelete(true)
                         }}
                       />
@@ -302,11 +330,17 @@ export function PageRail() {
       <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t('navigator.deleteTitle')}</AlertDialogTitle>
+            <AlertDialogTitle>
+              {(pageToDelete?.pages.length ?? 0) > 1
+                ? t('navigator.deletePagesTitle', { count: pageToDelete?.pages.length })
+                : t('navigator.deleteTitle')}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              {t('navigator.deleteDescription', {
-                page: t('navigator.pageNumber', { number: pageToDelete?.number }),
-              })}
+              {(pageToDelete?.pages.length ?? 0) > 1
+                ? t('navigator.deletePagesDescription', { count: pageToDelete?.pages.length })
+                : t('navigator.deleteDescription', {
+                    page: t('navigator.pageNumber', { number: pageToDelete?.number }),
+                  })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -315,7 +349,7 @@ export function PageRail() {
               variant='destructive'
               onClick={() => {
                 setConfirmingDelete(false)
-                if (pageToDelete !== null) deletePage(pageToDelete.page)
+                if (pageToDelete !== null) deletePage(pageToDelete.pages)
               }}
             >
               {t('navigator.delete')}

@@ -60,6 +60,7 @@ fn create(path: &PathBuf, pages: &[PathBuf]) -> Result<Session> {
         let background = Some(Hash::of(&bytes));
         ops.push(Op::AddFile { bytes });
         ops.push(Op::AddPage {
+            name: None,
             id: None,
             index,
             size: None,

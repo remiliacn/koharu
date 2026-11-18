@@ -37,6 +37,11 @@ pub struct Project {
 #[serde(deny_unknown_fields)]
 pub struct Page {
     pub id: PageId,
+    /// The name of the file it was made from, without its folder: an image's,
+    /// an archive member's, or a PDF page's; empty for one made blank or
+    /// imported before pages kept it. Export names its files after it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     pub size: Size,
     pub background: Option<Background>,
     /// Drawn first to last.

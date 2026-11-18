@@ -28,6 +28,7 @@
     "model": "Modèle",
     "newChat": "Nouvelle discussion",
     "placeholder": "Demandez à Koharu de travailler sur ce projet…",
+    "properties": "Propriétés",
     "reasoning": "Raisonnement",
     "send": "Envoyer",
     "thinking": "Réflexion…",
@@ -40,6 +41,7 @@
   },
   "canvas": {
     "empty": "Sélectionnez une page pour commencer.",
+    "fit": "Ajuster à la fenêtre",
     "notice": {
       "eraser_needs_raster": "Sélectionnez un calque matriciel pour effacer."
     }
@@ -172,6 +174,7 @@
     "borderColor": "Couleur du contour",
     "borderWidth": "Épaisseur du contour",
     "chooseFontSize": "Choisir la taille de police",
+    "color": "Couleur",
     "decreaseBorderWidth": "Réduire l’épaisseur du contour",
     "font": "Police",
     "fontSize": "Taille de police",
@@ -254,6 +257,7 @@
     "help": "Aide",
     "history": "Historique",
     "import": "Importer des pages",
+    "inpaintMask": "Afficher le masque d’inpainting",
     "redo": "Rétablir",
     "selectAllLayers": "Sélectionner tous les calques",
     "settings": "Paramètres",
@@ -406,10 +410,17 @@
       "subscription": "Abonnement",
       "title": "Fournisseurs"
     },
+    "shortcuts": {
+      "description": "Les raccourcis à une touche sont disponibles lorsqu’aucun champ de texte n’a le focus.",
+      "inputLabel": "Raccourci : {{action}}",
+      "title": "Raccourcis",
+      "tools": "Outils"
+    },
     "tabs": {
       "appearance": "Apparence",
       "pipeline": "Pipeline",
       "providers": "Fournisseurs",
+      "shortcuts": "Raccourcis",
       "typesetting": "Moteur de rendu"
     },
     "title": "Paramètres",
@@ -456,12 +467,6 @@
   },
   "status": {
     "zoom": "Zoom"
-  },
-  "story": {
-    "noText": "Aucun texte sur cette page.",
-    "sfx": "Effet sonore",
-    "title": "Histoire",
-    "translate": "Traduire {{name}}"
   },
   "tools": {
     "brushSize": "Taille du pinceau",

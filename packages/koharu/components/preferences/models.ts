@@ -18,6 +18,7 @@ export const inpainters: Record<Inpainter, string> = {
   'flux3-klein': 'FLUX.3 Klein',
   'moss-image': 'MOSS-Image',
   'qwen-image': 'Qwen-Image 2.1',
+  'rorem-mixed': 'RORem',
 }
 
 /** Vendors by rig's names, as their makers write them; others show their own name. */

@@ -25,6 +25,8 @@ Each page is sent as its texts in reading order, and the answer must return ever
 | Vision    | Sends the page image, 1,280 pixels on its longer side, ahead of the texts; off by default                                                    |
 | Reasoning | Lets the model reason before it answers, at the level you choose; **Provider default** uses the model's own, and **Off** turns reasoning off |
 
+**Fallback model** is a second model Koharu asks for a page when the first one fails it, for example on a rate limit, an empty balance, or a refusal. It gets the same instructions, reasoning level, vision setting, and the conversation so far. Leave it on **No model** to let the page fail instead.
+
 A model that can't take the reasoning level you choose, such as **Off** on a model that always reasons, stops the run and names the setting. Vision works only with a model that reads images; with any other model the run fails and asks you to turn **Vision** off. Both options add time, and on Koharu's own tests with Index-Translate 9B neither read better, so try them on a few pages before keeping them.
 
 ## Local quantization

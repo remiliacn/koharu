@@ -173,7 +173,7 @@ pub(crate) async fn inpaint(
                         "op": "add_layer",
                         "id": "$inpainted",
                         "page": page,
-                        "index": at.layers.len(),
+                        "index": below_lettering(&at.layers),
                         "layer": {"kind": "raster", "name": name, "attributes": {
                             "c2pa": {"inpainting": action("c2pa.created", &model, parameters)},
                         }},
@@ -258,7 +258,12 @@ fn read_blocks(member: &Member) -> Result<Option<Work>> {
     let mut cleanups = Vec::new();
     {
         let session = member.session.lock();
-        for (id, block) in member.blocks(&project) {
+        // A locked clean-up keeps its pixels, as a locked block does.
+        for (id, block) in member
+            .blocks(&project)
+            .into_iter()
+            .filter(|(_, block)| !block.cleanup.locked)
+        {
             let tiles = session.tiles(block.mask.id, None)?;
             if let Some((rect, mask)) = tiles.coverage(width, height) {
                 cleanups.push(Cleanup {
@@ -364,6 +369,18 @@ fn read_area(member: &Member, area: &Area) -> Result<Option<Work>> {
     }))
 }
 
+/// Where a painted area's fill goes on the page: under the first layer that
+/// holds a text or a block, so the lettering it was sampled without still
+/// draws over it, and over every fill before it; on top when nothing
+/// letters the page.
+fn below_lettering(layers: &[Layer]) -> usize {
+    fn letters(layer: &Layer) -> bool {
+        matches!(layer.content, Content::Text(_) | Content::Block(_))
+            || layer.children.iter().any(letters)
+    }
+    layers.iter().position(letters).unwrap_or(layers.len())
+}
+
 /// The layers in `layers` that letter the page: each text layer, and each
 /// block with a translation, which a frame leaves out but for its clean-up.
 fn letterings(layers: &[Layer], found: &mut Vec<LayerId>) {
@@ -451,6 +468,34 @@ mod tests {
     /// The Remove brush fills over its page as drawn: a raster painted over
     /// the scan shows to the model, as an earlier removal does, while a
     /// block's translation doesn't.
+    #[test]
+    fn an_area_fill_goes_under_the_lettering_and_over_earlier_fills() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut session = Session::create(dir.path().join("test.khr"))?;
+        let ops = [
+            json!({"op": "add_page", "id": "$p", "index": 0, "size": {"width": 100, "height": 100}}),
+            json!({"op": "add_layer", "page": "$p", "index": 0, "layer": {"kind": "raster"}}),
+            json!({"op": "add_layer", "id": "$panel", "page": "$p", "index": 1,
+                "layer": {"kind": "panel", "outline": "M0 0L100 0L100 100Z"}}),
+            json!({"op": "add_layer", "page": "$p", "parent": "$panel", "index": 0,
+                "layer": {"kind": "block", "source": {}}}),
+            json!({"op": "add_layer", "page": "$p", "index": 2, "layer": {"kind": "raster"}}),
+        ];
+        session.apply(Edit {
+            label: "test".to_owned(),
+            ops: ops
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<Result<_, _>>()?,
+        })?;
+        let project = session.project();
+        let page = project.pages().next().expect("a page");
+        // After the earlier fill, before the panel that holds the block.
+        assert_eq!(below_lettering(&page.layers), 1);
+        assert_eq!(below_lettering(&page.layers[..1]), 1);
+        Ok(())
+    }
+
     #[test]
     fn an_area_is_filled_over_the_page_as_drawn_without_its_lettering() {
         if Gpu::get().is_err() {

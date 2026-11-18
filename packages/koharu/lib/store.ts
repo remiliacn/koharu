@@ -1,6 +1,7 @@
 'use client'
 
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 import type {
   Bounds,
@@ -27,10 +28,15 @@ export function maxBrushDiameter(size: Size): number {
   return Math.round(Math.max(size.width / 2048, 1.0) * 128)
 }
 
+/** What a single key does: picks a tool, fits the page to the window, or shows the masks. */
+export type ShortcutAction = CanvasTool | 'fit' | 'masks'
+export type Shortcuts = Record<ShortcutAction, string>
+
 /** Each tool's key, Photoshop's for its counterpart: the Move tool's V, the Direct Selection
  * tool's A, the Type tool's T, the Brush's B, the Eraser's E, the Eyedropper's I, the Remove
- * tool's J, and the Hand's H. */
-export const toolKeys: Record<CanvasTool, string> = {
+ * tool's J, and the Hand's H; 0 fits the page, as Photoshop's Ctrl+0 does; and Q shows the masks,
+ * as Photoshop's Quick Mask. The user can rebind each in Settings. */
+export const defaultShortcuts: Shortcuts = {
   select: 'v',
   direct_select: 'a',
   marquee: 'm',
@@ -41,6 +47,8 @@ export const toolKeys: Record<CanvasTool, string> = {
   color_picker: 'i',
   remove: 'j',
   pan: 'h',
+  fit: '0',
+  masks: 'q',
 }
 
 export interface CanvasBrush {
@@ -56,10 +64,10 @@ export interface Camera {
   y: number
 }
 
-/** The right pane's tabs. */
-export type Panel = 'layers' | 'story' | 'agent'
 export type PipelineScope = 'selected-pages' | 'project'
-export const pipelineStages: readonly Stage[] = ['detect', 'recognize', 'inpaint', 'translate']
+/** The stages as the interface lists them, translation before inpainting as the fork listed them;
+ * a run still takes them in the pipeline's own order. */
+export const pipelineStages: readonly Stage[] = ['detect', 'recognize', 'translate', 'inpaint']
 
 /** A pipeline run as the activity center shows it, from the pipeline's events. */
 export interface Job {
@@ -81,9 +89,6 @@ interface KoharuStore {
   jobs: Record<string, Job>
   downloads: Record<string, Transfer>
   camera: Camera
-  /** Where the canvas's selection lies on the page as it's laid out, a point text's lines
-   * included. */
-  selectionBounds: Bounds | null
   /** Where the area the canvas's marquee and lasso marked lies on the page. */
   area: Bounds | null
   /** The text the canvas is typing into, and its selected characters' style. */
@@ -96,74 +101,106 @@ interface KoharuStore {
   selectedPages: PageId[]
   tool: CanvasTool
   brush: CanvasBrush
-  /** The right pane's tab, which the canvas numbers the texts for while it's Story. */
-  panel: Panel
-  /** The text whose Story entry the pointer is over, outlined on the canvas. */
-  storyHover: LayerId | null
+  /** Whether the page's inpainting masks show on the canvas, taking the brush and the eraser. */
+  masksShown: boolean
+  /** That the eraser showed the masks, which leaving it hides again. */
+  eraserShowedMasks: boolean
   processingScope: PipelineScope
   processingStages: Stage[]
   settingsOpen: boolean
   /** Whether the History window shows over the canvas. */
   historyOpen: boolean
+  shortcuts: Shortcuts
   selectPages: (pages: PageId[]) => void
-  showPanel: (panel: Panel) => void
-  setStoryHover: (layer: LayerId | null) => void
   setProcessingScope: (scope: PipelineScope) => void
   setProcessingStages: (stages: Stage[]) => void
   setSettingsOpen: (open: boolean) => void
   setHistoryOpen: (open: boolean) => void
+  setShortcut: (action: ShortcutAction, key: string) => void
   selectLayers: (layers: LayerId[]) => void
   setTool: (tool: CanvasTool) => void
   setBrush: (brush: CanvasBrush) => void
+  setMasksShown: (shown: boolean) => void
   dismissJob: (id: string) => void
   dismissDownload: (id: number) => void
 }
 
-export const useKoharuStore = create<KoharuStore>()((set) => ({
-  initialized: false,
-  preferences: null,
-  models: [],
-  jobs: {},
-  downloads: {},
-  camera: { zoom: 1, x: 0, y: 0 },
-  selectionBounds: null,
-  area: null,
-  typing: null,
-  picked: null,
-  selectedLayers: [],
-  canvasSelection: [],
-  selectedPages: [],
-  tool: 'select',
-  brush: { diameter: 48, color: '#FFFFFF' },
-  panel: 'layers',
-  storyHover: null,
-  processingScope: 'project',
-  processingStages: [...pipelineStages],
-  settingsOpen: false,
-  historyOpen: false,
-  selectPages: (selectedPages) => set({ selectedPages: [...new Set(selectedPages)] }),
-  showPanel: (panel) => set({ panel, storyHover: null }),
-  setStoryHover: (storyHover) => set({ storyHover }),
-  setProcessingScope: (processingScope) => set({ processingScope }),
-  setProcessingStages: (processingStages) => set({ processingStages }),
-  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
-  setHistoryOpen: (historyOpen) => set({ historyOpen }),
-  selectLayers: (selectedLayers) => set({ selectedLayers: [...new Set(selectedLayers)] }),
-  setTool: (tool) => set({ tool }),
-  setBrush: (brush) => set({ brush }),
-  dismissJob: (id) =>
-    set((state) => {
-      const jobs = { ...state.jobs }
-      delete jobs[id]
-      return { jobs }
+export const useKoharuStore = create<KoharuStore>()(
+  persist(
+    (set) => ({
+      initialized: false,
+      preferences: null,
+      models: [],
+      jobs: {},
+      downloads: {},
+      camera: { zoom: 1, x: 0, y: 0 },
+      area: null,
+      typing: null,
+      picked: null,
+      selectedLayers: [],
+      canvasSelection: [],
+      selectedPages: [],
+      tool: 'select',
+      brush: { diameter: 48, color: '#FFFFFF' },
+      masksShown: false,
+      eraserShowedMasks: false,
+      processingScope: 'selected-pages',
+      processingStages: [...pipelineStages],
+      settingsOpen: false,
+      historyOpen: false,
+      shortcuts: defaultShortcuts,
+      selectPages: (selectedPages) => set({ selectedPages: [...new Set(selectedPages)] }),
+      setProcessingScope: (processingScope) => set({ processingScope }),
+      setProcessingStages: (processingStages) => set({ processingStages }),
+      setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+      setHistoryOpen: (historyOpen) => set({ historyOpen }),
+      setShortcut: (action, key) =>
+        set((state) => ({
+          shortcuts: { ...state.shortcuts, [action]: key.toLowerCase().slice(0, 1) },
+        })),
+      selectLayers: (selectedLayers) => set({ selectedLayers: [...new Set(selectedLayers)] }),
+      // The eraser shows the masks it edits and hides them again on leaving, unless the user
+      // chose whether they show meanwhile.
+      setTool: (tool) =>
+        set((state) => {
+          if (tool === state.tool) return { tool }
+          if (tool === 'eraser' && !state.masksShown) {
+            return { tool, masksShown: true, eraserShowedMasks: true }
+          }
+          if (state.eraserShowedMasks) return { tool, masksShown: false, eraserShowedMasks: false }
+          return { tool }
+        }),
+      setBrush: (brush) => set({ brush }),
+      setMasksShown: (masksShown) => set({ masksShown, eraserShowedMasks: false }),
+      dismissJob: (id) =>
+        set((state) => {
+          const jobs = { ...state.jobs }
+          delete jobs[id]
+          return { jobs }
+        }),
+      dismissDownload: (id) =>
+        set((state) => {
+          const downloads = { ...state.downloads }
+          delete downloads[String(id)]
+          return { downloads }
+        }),
     }),
-  dismissDownload: (id) =>
-    set((state) => {
-      const downloads = { ...state.downloads }
-      delete downloads[String(id)]
-      return { downloads }
-    }),
-}))
+    {
+      // The shortcuts outlive a restart; a binding saved for an action that's gone is dropped,
+      // and an action saved before it existed keeps its default.
+      name: 'koharu-shortcuts',
+      partialize: (state) => ({ shortcuts: state.shortcuts }),
+      merge: (persisted, current) => {
+        const saved = (persisted as Partial<Pick<KoharuStore, 'shortcuts'>> | undefined)?.shortcuts
+        const shortcuts = { ...current.shortcuts }
+        for (const action of Object.keys(shortcuts) as ShortcutAction[]) {
+          if (typeof saved?.[action] === 'string') shortcuts[action] = saved[action]
+        }
+        return { ...current, shortcuts }
+      },
+    },
+  ),
+)
 
 /** Every run's events so far, as the editor loads. */
 export function receiveRuns(events: PipelineEvent[]): void {

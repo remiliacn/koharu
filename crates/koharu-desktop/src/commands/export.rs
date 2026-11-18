@@ -69,19 +69,20 @@ fn write(
     destination: &Path,
 ) -> anyhow::Result<()> {
     let session = app.session()?;
-    let pages: Vec<PageId> = session
+    let pages: Vec<(PageId, String)> = session
         .lock()
         .project()
         .pages()
-        .map(|page| page.id)
+        .map(|page| (page.id, page.name.clone()))
         .collect();
-    let digits = pages.len().to_string().len().max(3);
+    let digits = pages.len().to_string().len().max(4);
     let mut archive = match format {
         ExportFormat::Cbz => Some(::zip::ZipWriter::new(File::create(destination)?)),
         ExportFormat::Png | ExportFormat::Psd => None,
     };
-    for (index, &page) in pages.iter().enumerate() {
-        let number = format!("{:0digits$}", index + 1);
+    for (index, (page, name)) in pages.iter().enumerate() {
+        let page = *page;
+        let number = file_stem(index + 1, digits, name);
         let frame = app.renderer.render(&session.lock(), page)?;
         match (format, &mut archive) {
             (ExportFormat::Psd, _) => {
@@ -106,9 +107,39 @@ fn write(
     Ok(())
 }
 
+/// A page's file name without its extension: its number, and the name of the
+/// file it was made from, as `0001_cover`, in characters every filesystem
+/// takes; its number alone when it has no name.
+fn file_stem(number: usize, digits: usize, name: &str) -> String {
+    let name = name
+        .trim()
+        .trim_end_matches(|character: char| character == '.' || character.is_whitespace());
+    let name = name
+        .rsplit_once('.')
+        .map_or(name, |(stem, _)| stem)
+        .replace(['<', '>', ':', '"', '/', '\\', '|', '?', '*'], "_");
+    match name.is_empty() {
+        true => format!("{number:0digits$}"),
+        false => format!("{number:0digits$}_{name}"),
+    }
+}
+
 fn png(frame: &Frame) -> anyhow::Result<Vec<u8>> {
     let raster = frame.rasterize()?;
     let mut png = Cursor::new(Vec::new());
     raster.image.write_to(&mut png, ImageFormat::Png)?;
     Ok(png.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_stem;
+
+    #[test]
+    fn a_page_is_exported_under_its_number_and_its_files_name() {
+        assert_eq!(file_stem(1, 4, "cover.png"), "0001_cover");
+        assert_eq!(file_stem(12, 4, "chap 1 p3.jpeg"), "0012_chap 1 p3");
+        assert_eq!(file_stem(3, 4, "a:b?.webp"), "0003_a_b_");
+        assert_eq!(file_stem(7, 4, ""), "0007");
+    }
 }

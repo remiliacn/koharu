@@ -378,7 +378,7 @@ export type ImportSource =
   | { paths: string[] }
 
 /**  The inpainters, by id in the section and by name. */
-export type Inpainter = 'lama' | 'flux3-klein' | 'moss-image' | 'qwen-image'
+export type Inpainter = 'lama' | 'flux3-klein' | 'moss-image' | 'qwen-image' | 'rorem-mixed'
 
 export type InpainterConfig = {
   /**  What cleans pages and the Remove brush's areas. */
@@ -513,9 +513,17 @@ export type Offset = {
 export type Op =
   /**
    *  Add a page at `index`: of `size`, or made from an added file, which
-   *  becomes its background and gives it its size.
+   *  becomes its background and gives it its size, named after the file it
+   *  came from.
    */
-  | { op: 'add_page'; id?: Ref | null; index: number; size?: Size | null; background?: Hash | null }
+  | {
+      op: 'add_page'
+      id?: Ref | null
+      name?: string | null
+      index: number
+      size?: Size | null
+      background?: Hash | null
+    }
   /**
    *  Set or clear a page's background. A new file must be an image of the
    *  page's size.
@@ -601,6 +609,12 @@ export type Outcome =
  */
 export type Page = {
   id: PageId
+  /**
+   *  The name of the file it was made from, without its folder: an image's,
+   *  an archive member's, or a PDF page's; empty for one made blank or
+   *  imported before pages kept it. Export names its files after it.
+   */
+  name?: string
   size: Size
   background: Background | null
   /**  Drawn first to last. */
@@ -906,6 +920,12 @@ export type Transform = [[number, number, number], [number, number, number]]
 export type TranslatorConfig = {
   /**  A `vendor/model` reference, as koharu-llm connects one. */
   model?: string
+  /**
+   *  The model a page is asked of when `model` fails it, such as on a rate
+   *  limit, an empty balance, or a refusal, with the same prompt,
+   *  reasoning, and history; none when empty. A fork addition.
+   */
+  fallback?: string
   /**  A language CLDR names in English. */
   target?: string
   /**
@@ -1025,14 +1045,16 @@ export const commands = {
   /** Picks where the open project's pages go, and writes them there. `labels` names a PSD's layers the scene names nothing, in the interface's language. */
   export: (format: ExportFormat, labels: Labels) =>
     invoke<null>('export', { format, labels }, { headers: headers() }),
-  /** The canvas element's rectangle, in CSS pixels from the window's corner. */
-  setViewport: (x: number, y: number, width: number, height: number) =>
-    invoke<null>('set_viewport', { x, y, width, height }, { headers: headers() }),
+  /** The canvas element's rectangle, in CSS pixels from the window's corner, and the page's `devicePixelRatio`, physical pixels to a CSS pixel. */
+  setViewport: (x: number, y: number, width: number, height: number, scale: number) =>
+    invoke<null>('set_viewport', { x, y, width, height, scale }, { headers: headers() }),
   setTool: (tool: Tool) => invoke<null>('set_tool', { tool }, { headers: headers() }),
   setBrush: (brush: Brush) => invoke<null>('set_brush', { brush }, { headers: headers() }),
   setColors: (colors: Colors) => invoke<null>('set_colors', { colors }, { headers: headers() }),
   /** Whether the Story panel shows, and the text whose entry the pointer is on, which the canvas numbers and outlines. */
   setStory: (story: Story) => invoke<null>('set_story', { story }, { headers: headers() }),
+  /** Shows or hides the page's inpainting masks, as the mask toggle does. */
+  setMasks: (shown: boolean) => invoke<null>('set_masks', { shown }, { headers: headers() }),
   /** The type bar's character settings for the text being typed: the selected characters take them, or at a caret the next ones typed. */
   styleTyping: (patch: CharStyle) =>
     invoke<null>('style_typing', { patch }, { headers: headers() }),

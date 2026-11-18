@@ -9,11 +9,10 @@ import { FillBar } from '@/components/editor/FillBar'
 import { HistoryWindow } from '@/components/editor/HistoryWindow'
 import { StatusBar } from '@/components/editor/StatusBar'
 import { ToolBar } from '@/components/editor/ToolBar'
-import { TypeBar } from '@/components/editor/TypeBar'
 import { dispatch } from '@/lib/backend'
 import { usePage } from '@/lib/queries'
 import { deleteSelection } from '@/lib/scene'
-import { hexToRgba, toolKeys, useKoharuStore, type CanvasTool } from '@/lib/store'
+import { hexToRgba, useKoharuStore, type CanvasTool, type ShortcutAction } from '@/lib/store'
 import { commands, type Rgba } from '@koharu/ipc/protocol'
 
 /** The canvas's place in the window. The native canvas draws the page under the web interface
@@ -25,6 +24,7 @@ export function CanvasWorkspace() {
   const page = usePage().data
   const tool = useKoharuStore((state) => state.tool)
   const brush = useKoharuStore((state) => state.brush)
+  const masksShown = useKoharuStore((state) => state.masksShown)
   const colorSampling = useColorSampling()
 
   useEffect(() => {
@@ -32,7 +32,8 @@ export function CanvasWorkspace() {
     if (!element) return
     const report = () => {
       const { x, y, width, height } = element.getBoundingClientRect()
-      dispatch(commands.setViewport, x, y, width, height)
+      // The interface's zoom changes how many physical pixels a CSS pixel is.
+      dispatch(commands.setViewport, x, y, width, height, window.devicePixelRatio)
     }
     report()
     const resize = new ResizeObserver(report)
@@ -44,19 +45,12 @@ export function CanvasWorkspace() {
       window.removeEventListener('resize', report)
       window.visualViewport?.removeEventListener('resize', report)
       // Nothing to draw while the editor is away, as under the preferences.
-      dispatch(commands.setViewport, 0, 0, 0, 0)
+      dispatch(commands.setViewport, 0, 0, 0, 0, window.devicePixelRatio)
     }
   }, [])
 
   useEffect(() => dispatch(commands.setTool, tool), [tool])
-  // The canvas numbers the texts and outlines their frames while Story shows.
-  const panel = useKoharuStore((state) => state.panel)
-  const storyHover = useKoharuStore((state) => state.storyHover)
-  useEffect(
-    () => dispatch(commands.setStory, { shown: panel === 'story', hovered: storyHover }),
-    [panel, storyHover],
-  )
-
+  useEffect(() => dispatch(commands.setMasks, masksShown), [masksShown])
   useEffect(
     () =>
       dispatch(commands.setBrush, {
@@ -148,8 +142,20 @@ export function CanvasWorkspace() {
       }
       if (command || event.altKey) return
       const key = event.key.toLowerCase()
-      const next = (Object.keys(toolKeys) as CanvasTool[]).find((tool) => toolKeys[tool] === key)
-      if (next) state.setTool(next)
+      // Fit Window first, then the masks, then the first tool bound to the key, in the toolbar's
+      // order.
+      if (key === state.shortcuts.fit) {
+        dispatch(commands.fit)
+        return
+      }
+      if (key === state.shortcuts.masks) {
+        if (page) state.setMasksShown(!state.masksShown)
+        return
+      }
+      const next = (Object.keys(state.shortcuts) as ShortcutAction[]).find(
+        (action) => action !== 'fit' && action !== 'masks' && state.shortcuts[action] === key,
+      )
+      if (next && next !== 'fit' && next !== 'masks') state.setTool(next)
     }
 
     const up = (event: KeyboardEvent) => {
@@ -187,7 +193,6 @@ export function CanvasWorkspace() {
           // overlay with it, off the canvas the overlays sit on.
           className='relative min-h-0 min-w-0 flex-1 overflow-clip'
         >
-          {page && <TypeBar />}
           {page && <FillBar />}
           {page && <HistoryWindow />}
           {!page && (

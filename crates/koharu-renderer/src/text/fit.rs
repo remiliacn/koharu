@@ -777,7 +777,7 @@ mod tests {
     fn lines_aligned_to_a_balloon_s_edge_start_together_inside_it() -> Result<()> {
         // Twelve words 30 long in a circle 200 across.
         let frame: Frame = serde_json::from_value(serde_json::json!({
-            "path": {"path": "M0 100 A100 100 0 1 0 200 100 A100 100 0 1 0 0 100 Z", "anchor": "center"}
+            "path": {"path": "M0 100 A100 100 0 1 0 200 100 A100 100 0 1 0 0 100 Z", "anchor": "center", "inset": 1.0}
         }))?;
         let styled = Styled {
             text: String::new(),

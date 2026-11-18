@@ -1,6 +1,6 @@
 'use client'
 
-import { ScanText, Sparkles, X } from 'lucide-react'
+import { ScanSearch, Sparkles, X } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -41,7 +41,8 @@ export function FillBar() {
 
   const pipeline = preferences.pipeline
   const model = pipeline.inpainter?.fill ?? 'flux3-klein'
-  const prompted = model !== 'lama'
+  // LaMa takes no prompt, and RORem keeps its own.
+  const prompted = model !== 'lama' && model !== 'rorem-mixed'
   const generate = () => dispatch(commands.fill, (prompted && prompt.trim()) || null, model)
   return (
     <ContextBar bounds={area} aria-label={t('fill.title')}>
@@ -103,7 +104,7 @@ export function FillBar() {
         className='h-7 text-[11px]'
         onClick={() => dispatch(commands.detectArea)}
       >
-        <ScanText />
+        <ScanSearch />
         {t('fill.detect')}
       </Button>
       <Tooltip>

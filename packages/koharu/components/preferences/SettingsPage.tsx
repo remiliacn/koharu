@@ -1,6 +1,6 @@
 'use client'
 
-import { ArrowLeft, Cpu, KeyRound, Monitor, Moon, Palette, Sun, Type } from 'lucide-react'
+import { ArrowLeft, Cpu, Keyboard, KeyRound, Monitor, Moon, Palette, Sun, Type } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -15,9 +15,10 @@ import { ProviderPreferences } from '@/components/preferences/ProviderPreference
 import { TypesettingPreferences } from '@/components/preferences/TypesettingPreferences'
 import { refreshModels, refreshPreferences, savePreferences } from '@/lib/backend'
 import { supportedLanguages } from '@/lib/i18n'
-import { useKoharuStore } from '@/lib/store'
+import { defaultShortcuts, useKoharuStore, type ShortcutAction } from '@/lib/store'
 import type { Preferences } from '@koharu/ipc/protocol'
 import { Button } from '@koharu/ui/components/button'
+import { Input } from '@koharu/ui/components/input'
 import { ScrollArea } from '@koharu/ui/components/scroll-area'
 import {
   Select,
@@ -32,6 +33,7 @@ const tabs = [
   ['pipeline', Cpu],
   ['providers', KeyRound],
   ['typesetting', Type],
+  ['shortcuts', Keyboard],
 ] as const
 type Tab = (typeof tabs)[number][0]
 
@@ -126,7 +128,8 @@ export function SettingsPage() {
         <ScrollArea className='min-h-0 flex-1'>
           <div className='mx-auto w-full max-w-4xl px-10 py-10'>
             {tab === 'appearance' && <AppearancePreferences />}
-            {tab !== 'appearance' && !draft && <LoadingPreferences />}
+            {tab === 'shortcuts' && <ShortcutPreferences />}
+            {tab !== 'appearance' && tab !== 'shortcuts' && !draft && <LoadingPreferences />}
             {tab === 'pipeline' && draft && (
               <PipelinePreferences
                 value={draft.pipeline}
@@ -216,6 +219,42 @@ function AppearancePreferences() {
             </SelectContent>
           </Select>
         </PreferenceRow>
+      </PreferenceSection>
+    </PreferencePage>
+  )
+}
+
+/** Each single-key shortcut, rebound by typing a character, as the toolbar's order lists the tools,
+ * then Fit Window and the masks. They're kept in the interface, not `config.toml`. */
+function ShortcutPreferences() {
+  const { t } = useTranslation()
+  const shortcuts = useKoharuStore((state) => state.shortcuts)
+  const setShortcut = useKoharuStore((state) => state.setShortcut)
+  return (
+    <PreferencePage
+      title={t('settings.shortcuts.title')}
+      description={t('settings.shortcuts.description')}
+    >
+      <PreferenceSection title={t('settings.shortcuts.tools')}>
+        {(Object.keys(defaultShortcuts) as ShortcutAction[]).map((action) => {
+          const name =
+            action === 'fit'
+              ? t('canvas.fit')
+              : action === 'masks'
+                ? t('menu.inpaintMask')
+                : t(`tools.${action}`)
+          return (
+            <PreferenceRow key={action} title={name}>
+              <Input
+                aria-label={t('settings.shortcuts.inputLabel', { action: name })}
+                maxLength={1}
+                value={shortcuts[action]}
+                className='ml-auto h-8 w-14 text-center text-[12px] uppercase'
+                onChange={(event) => setShortcut(action, event.currentTarget.value)}
+              />
+            </PreferenceRow>
+          )
+        })}
       </PreferenceSection>
     </PreferencePage>
   )

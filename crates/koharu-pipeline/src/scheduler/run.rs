@@ -101,8 +101,14 @@ impl Plan {
                 }
             }
             Target::Area { page, area, prompt } => {
-                if stages.len() != 1 || !stages.iter().all(|stage| matches!(stage, Stage::Detect | Stage::Inpaint)) {
-                    return Err(Error::invalid("an area takes detection or inpainting alone"));
+                if stages.len() != 1
+                    || !stages
+                        .iter()
+                        .all(|stage| matches!(stage, Stage::Detect | Stage::Inpaint))
+                {
+                    return Err(Error::invalid(
+                        "an area takes detection or inpainting alone",
+                    ));
                 }
                 project.page(*page)?;
                 if area.pixels.len() != area.rect.width as usize * area.rect.height as usize {

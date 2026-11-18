@@ -6,10 +6,14 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Languages,
   Play,
+  ScanSearch,
+  ScanText,
   Settings,
   Sparkles,
   Square,
+  WandSparkles,
 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -22,9 +26,17 @@ import { modelName, vendorOf } from '@/lib/translation'
 import { commands, type Model, type Stage, type TranslatorConfig } from '@koharu/ipc/protocol'
 import { Button } from '@koharu/ui/components/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@koharu/ui/components/popover'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@koharu/ui/components/tooltip'
 import { cn } from '@koharu/ui/lib/utils'
 
 type SelectorView = 'root' | 'model' | 'scope' | 'stages' | 'output'
+
+const stageIcons = {
+  detect: ScanSearch,
+  recognize: ScanText,
+  inpaint: WandSparkles,
+  translate: Languages,
+} as const satisfies Record<Stage, typeof Play>
 
 export function InferenceControl({
   onRun,
@@ -47,6 +59,32 @@ export function InferenceControl({
 
   return (
     <div className='flex items-center gap-1'>
+      <div className='flex items-center gap-0.5'>
+        {pipelineStages.map((stage) => {
+          const Icon = stageIcons[stage]
+          const label = t(`navigator.run.${stage}`)
+          return (
+            <Tooltip key={stage}>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='icon-sm'
+                    aria-label={label}
+                    disabled={disabled || unavailable || Boolean(running)}
+                    className='size-7 rounded-lg text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-30'
+                    onClick={() => onRun(scope, [stage])}
+                  />
+                }
+              >
+                <Icon className='size-3.5' />
+              </TooltipTrigger>
+              <TooltipContent side='bottom'>{label}</TooltipContent>
+            </Tooltip>
+          )
+        })}
+      </div>
       <RuntimeSelector
         scope={scope}
         stages={stages}

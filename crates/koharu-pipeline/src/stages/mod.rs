@@ -13,7 +13,7 @@ use std::{sync::Arc, time::Instant};
 
 use anyhow::anyhow;
 use image::DynamicImage;
-use koharu_scene::{Block, Edit, LayerId, Op, PageId, Project, Session};
+use koharu_scene::{Block, Content, Edit, Layer, LayerId, Op, PageId, Project, Session};
 use parking_lot::Mutex;
 use petgraph::stable_graph::NodeIndex;
 use serde_json::{Value, json};
@@ -65,9 +65,23 @@ impl Member {
         Ok(Some((project, image::load_from_memory(&bytes)?)))
     }
 
-    /// The blocks of `project`'s page the task works on, in reading order.
+    /// The blocks of `project`'s page the task works on, in reading order,
+    /// but a locked one or one in a locked layer, which the user keeps as it
+    /// is, as detection keeps it; the scene would refuse the page's whole
+    /// edit for writing to it.
     pub(crate) fn blocks<'p>(&self, project: &'p Project) -> Vec<(LayerId, &'p Block)> {
-        let mut blocks = project.blocks(self.page).unwrap_or_default();
+        fn unlocked<'p>(layers: &'p [Layer], found: &mut Vec<(LayerId, &'p Block)>) {
+            for layer in layers.iter().filter(|layer| !layer.locked) {
+                if let Content::Block(block) = &layer.content {
+                    found.push((layer.id, &**block));
+                }
+                unlocked(&layer.children, found);
+            }
+        }
+        let mut blocks = Vec::new();
+        if let Ok(page) = project.page(self.page) {
+            unlocked(&page.layers, &mut blocks);
+        }
         if let Some(only) = &self.blocks {
             blocks.retain(|(id, _)| only.contains(id));
         }
@@ -262,4 +276,58 @@ pub(crate) fn action(action: &str, model: &str, parameters: Option<Value>) -> Va
         value["parameters"] = parameters;
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use koharu_scene::Created;
+
+    use super::*;
+
+    #[test]
+    fn a_stage_leaves_out_a_locked_block_and_the_blocks_in_a_locked_layer() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut session = Session::create(dir.path().join("test.khr"))?;
+        let panel = json!({"kind": "panel", "outline": "M0 0L10 0L10 10Z"});
+        let block = |locked: bool| json!({"kind": "block", "locked": locked, "source": {}});
+        let ops = [
+            json!({"op": "add_page", "id": "$p", "index": 0, "size": {"width": 100, "height": 100}}),
+            json!({"op": "add_layer", "id": "$open", "page": "$p", "index": 0, "layer": panel}),
+            json!({"op": "add_layer", "page": "$p", "parent": "$open", "index": 0, "layer": block(false)}),
+            json!({"op": "add_layer", "page": "$p", "parent": "$open", "index": 1, "layer": block(true)}),
+            json!({"op": "add_layer", "id": "$shut", "page": "$p", "index": 1, "layer": panel}),
+            json!({"op": "add_layer", "page": "$p", "parent": "$shut", "index": 0, "layer": block(false)}),
+            json!({"op": "update_layer", "layer": "$shut", "patch": {"locked": true}}),
+        ];
+        let change = session.apply(Edit {
+            label: "test".to_owned(),
+            ops: ops
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<Result<_, _>>()?,
+        })?;
+        let (Some(Created::Page { id: page, .. }), Some(Created::Layer { id: open, .. })) = (
+            change.created.first().cloned(),
+            change.created.get(2).cloned(),
+        ) else {
+            anyhow::bail!("no page or block");
+        };
+        let project = session.project();
+        let member = Member {
+            run: RunId(0),
+            job: NodeIndex::new(0),
+            page,
+            index: 0,
+            blocks: None,
+            session: Arc::new(Mutex::new(session)),
+            cancel: CancellationToken::new(),
+        };
+        let found: Vec<LayerId> = member
+            .blocks(&project)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(found, [open]);
+        Ok(())
+    }
 }

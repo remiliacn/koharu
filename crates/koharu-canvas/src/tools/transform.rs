@@ -3,9 +3,11 @@
 //! values, and a text's frame resizes as the scene's own `Frame`.
 
 use cursor_icon::CursorIcon;
-use koharu_renderer::Frame;
-use koharu_scene::{Bounds, Content, Edit, Frame as TextFrame, LayerId, Op, Path, Ref, Text};
-use kurbo::{Affine, BezPath, Point, Rect};
+use koharu_renderer::{Frame, Lettering as Laid, Renderer};
+use koharu_scene::{
+    Bounds, Content, Edit, Fit, Frame as TextFrame, LayerId, Op, Path, PathFit, Ref, Text,
+};
+use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _};
 use serde_json::{Value, json};
 
 use crate::{
@@ -42,11 +44,37 @@ pub(crate) struct Transform {
     lifted: Vec<LayerId>,
     under: Option<Frame>,
     drawn: Vec<(usize, Frame)>,
+    /// What a resize re-wraps as it goes, laid out again in its new box at
+    /// every move: each text's control, its text, and its lettering in the
+    /// box the drag gives it now.
+    rewrapped: Vec<Rewrap>,
+    renderer: Renderer,
 }
 
 impl Transform {
     pub fn new(cx: &Context, mode: Mode, start: Point, controls: Vec<Control>) -> Self {
         let frame = cx.snapshot.frame();
+        let rewrapped: Vec<Rewrap> = match mode {
+            Mode::Resize(_) => controls
+                .iter()
+                .enumerate()
+                .filter_map(|(index, control)| {
+                    let content = &cx.snapshot.layer(control.layer)?.content;
+                    match Lettering::of(content)? {
+                        // A block's source isn't drawn, so there's nothing to re-wrap.
+                        (Lettering::Source, _) => None,
+                        (lettering, text) => Some(Rewrap {
+                            index,
+                            text: text.clone(),
+                            lettering,
+                            balloon: cx.snapshot.balloon(control.layer).cloned(),
+                            laid: cx.renderer.lettering(control.layer, text).ok(),
+                        }),
+                    }
+                })
+                .collect(),
+            Mode::Move | Mode::Rotate => Vec::new(),
+        };
         let drawn: Vec<(usize, Frame)> = match mode {
             Mode::Resize(_) => Vec::new(),
             Mode::Move | Mode::Rotate => controls
@@ -66,7 +94,9 @@ impl Transform {
         };
         let lifted: Vec<LayerId> = drawn
             .iter()
-            .map(|(index, _)| controls[*index].layer)
+            .map(|(index, _)| *index)
+            .chain(rewrapped.iter().map(|rewrap| rewrap.index))
+            .map(|index| controls[index].layer)
             .collect();
         let under = (!lifted.is_empty()).then(|| frame.without(&lifted));
         Self {
@@ -77,6 +107,8 @@ impl Transform {
             lifted,
             under,
             drawn,
+            rewrapped,
+            renderer: cx.renderer.clone(),
         }
     }
 
@@ -93,8 +125,29 @@ impl Transform {
     }
 
     pub fn moved(&mut self, samples: &[Sample]) {
-        if let Some(last) = samples.last() {
-            self.current = last.page;
+        let Some(last) = samples.last() else {
+            return;
+        };
+        self.current = last.page;
+        let Mode::Resize(handle) = self.mode else {
+            return;
+        };
+        for rewrap in &mut self.rewrapped {
+            let control = &self.controls[rewrap.index];
+            let local = control.resize_to(handle, self.current, MINIMUM);
+            let framed = frame(
+                &rewrap.text,
+                local,
+                rewrap.lettering,
+                rewrap.balloon.as_ref(),
+            )
+            .map(|frame| Text {
+                frame,
+                ..rewrap.text.clone()
+            });
+            if let Some(framed) = framed {
+                rewrap.laid = self.renderer.lettering(control.layer, &framed).ok();
+            }
         }
     }
 
@@ -163,10 +216,16 @@ impl Transform {
             .collect()
     }
 
-    /// Each lifted layer's own drawing, where the drag takes it.
+    /// Each lifted layer's own drawing, where the drag takes it, and each
+    /// resized text laid out in its box so far.
     pub fn preview(&self, overlay: &mut Overlay) -> anyhow::Result<()> {
         for (index, own) in &self.drawn {
             overlay.frame(own, self.turn(&self.controls[*index]))?;
+        }
+        for rewrap in &self.rewrapped {
+            if let Some(laid) = &rewrap.laid {
+                overlay.lettering(laid, Affine::from(rewrap.text.transform))?;
+            }
         }
         Ok(())
     }
@@ -179,6 +238,17 @@ impl Transform {
             Mode::Resize(_) => Affine::IDENTITY,
         }
     }
+}
+
+/// A text a resize lays out again at every move: its control's index, its
+/// text, where that text lives, the balloon it's in, and its lettering in
+/// the box the drag gives it now.
+struct Rewrap {
+    index: usize,
+    text: Text,
+    lettering: Lettering,
+    balloon: Option<BezPath>,
+    laid: Option<Laid>,
 }
 
 /// The op that carries `control`'s layer along `affine`, a page-space move
@@ -197,8 +267,9 @@ pub(crate) fn transformed(control: &Control, affine: Affine) -> Op {
 
 /// The op that gives `control` the frame `local` in its own coordinates,
 /// for a resize; `None` for what doesn't resize. Text resizes its frame
-/// without scaling its type, as Photoshop resizes a paragraph's box; an
-/// image or a shape is stretched.
+/// without scaling its type, as Photoshop resizes a paragraph's box, and the
+/// box it's given decides its size and wrapping; an image or a shape is
+/// stretched.
 pub(crate) fn resized(snapshot: &Snapshot, control: &Control, local: Rect) -> Option<Op> {
     let stretch = map(control.local(), local);
     let layer = Ref::from(control.layer);
@@ -211,9 +282,18 @@ pub(crate) fn resized(snapshot: &Snapshot, control: &Control, local: Rect) -> Op
         });
     }
     let (lettering, text) = Lettering::of(content)?;
+    let balloon = snapshot.balloon(control.layer);
+    let mut frame = serde_json::to_value(frame(text, local, lettering, balloon)?).ok()?;
+    // A merge patch switches the frame's kind by clearing the other.
+    let other = if frame.get("box").is_some() {
+        "path"
+    } else {
+        "box"
+    };
+    frame[other] = Value::Null;
     Some(Op::UpdateLayer {
         layer,
-        patch: lettering.patch(frame(text, local, stretch)?),
+        patch: lettering.patch(frame),
     })
 }
 
@@ -248,27 +328,113 @@ impl Lettering {
     }
 }
 
-/// `text`'s frame resized to `local`: a box takes it as its bounds, and a
-/// path is stretched onto it.
-fn frame(text: &Text, local: Rect, stretch: Affine) -> Option<Value> {
-    let mut frame = text.frame.clone();
-    match &mut frame {
-        TextFrame::Box { bounds, .. } => {
-            *bounds = Bounds {
-                x: local.x0,
-                y: local.y0,
-                width: local.width(),
-                height: local.height(),
-            };
-        }
-        TextFrame::Path { path, .. } => {
-            let mut outline = BezPath::from_svg(path.as_str()).ok()?;
-            outline.apply_affine(stretch);
-            *path = Path::try_from(outline.to_svg()).ok()?;
-        }
+/// `text`'s frame resized to `local`, the rectangle the handles outline,
+/// keeping how it fits. A text layer's is that box, as Photoshop resizes a
+/// paragraph's. A block's translation flows in its balloon's shape within the
+/// rectangle, so a round balloon's lines follow its curve, kept the default
+/// inset off the edge; outside a balloon, in the rectangle itself.
+fn frame(
+    text: &Text,
+    local: Rect,
+    lettering: Lettering,
+    balloon: Option<&BezPath>,
+) -> Option<TextFrame> {
+    let bounds = Bounds {
+        x: local.x0,
+        y: local.y0,
+        width: local.width(),
+        height: local.height(),
+    };
+    let (fit, anchor) = match &text.frame {
+        TextFrame::Box { fit, anchor, .. } => (*fit, *anchor),
+        TextFrame::Path { fit, anchor, .. } => (
+            match fit {
+                PathFit::Shrink => Fit::Shrink,
+                PathFit::None => Fit::None,
+                PathFit::Best => Fit::Best,
+            },
+            *anchor,
+        ),
         TextFrame::Point => return None,
+    };
+    if lettering == Lettering::Text {
+        return Some(TextFrame::Box {
+            bounds,
+            fit,
+            anchor,
+        });
     }
-    serde_json::to_value(frame).ok()
+    let fit = match fit {
+        Fit::Shrink | Fit::Grow => PathFit::Shrink,
+        Fit::None => PathFit::None,
+        Fit::Best => PathFit::Best,
+    };
+    let outline = balloon
+        .and_then(|balloon| {
+            let own = Affine::from(text.transform).inverse() * balloon.clone();
+            clipped(&own, local)
+        })
+        .unwrap_or_else(|| local.to_path(0.1));
+    Some(TextFrame::Path {
+        path: Path::try_from(outline.to_svg()).ok()?,
+        fit,
+        anchor,
+        inset: TextFrame::DEFAULT_INSET,
+    })
+}
+
+/// `outline`, flattened to a polygon, cut to `rect` with Sutherland and
+/// Hodgman's clip against each of its sides; `None` when nothing of it is
+/// inside.
+fn clipped(outline: &BezPath, rect: Rect) -> Option<BezPath> {
+    let mut points = Vec::new();
+    kurbo::flatten(outline.iter(), 0.25, |element| match element {
+        PathEl::MoveTo(point) | PathEl::LineTo(point) => points.push(point),
+        _ => {}
+    });
+    let sides: [(fn(Point, Rect) -> bool, fn(Point, Point, Rect) -> Point); 4] = [
+        (|p, r| p.x >= r.x0, |a, b, r| across_x(a, b, r.x0)),
+        (|p, r| p.x <= r.x1, |a, b, r| across_x(a, b, r.x1)),
+        (|p, r| p.y >= r.y0, |a, b, r| across_y(a, b, r.y0)),
+        (|p, r| p.y <= r.y1, |a, b, r| across_y(a, b, r.y1)),
+    ];
+    for (inside, cross) in sides {
+        let input = std::mem::take(&mut points);
+        for (at, &current) in input.iter().enumerate() {
+            let previous = input[(at + input.len() - 1) % input.len()];
+            match (inside(previous, rect), inside(current, rect)) {
+                (true, true) => points.push(current),
+                (true, false) => points.push(cross(previous, current, rect)),
+                (false, true) => {
+                    points.push(cross(previous, current, rect));
+                    points.push(current);
+                }
+                (false, false) => {}
+            }
+        }
+    }
+    if points.len() < 3 {
+        return None;
+    }
+    let mut path = BezPath::new();
+    path.move_to(points[0]);
+    for &point in &points[1..] {
+        path.line_to(point);
+    }
+    path.close_path();
+    Some(path)
+}
+
+/// Where the segment from `a` to `b` crosses the vertical line at `x`.
+fn across_x(a: Point, b: Point, x: f64) -> Point {
+    let t = (x - a.x) / (b.x - a.x);
+    Point::new(x, a.y + (b.y - a.y) * t)
+}
+
+/// Where the segment from `a` to `b` crosses the horizontal line at `y`.
+fn across_y(a: Point, b: Point, y: f64) -> Point {
+    let t = (y - a.y) / (b.y - a.y);
+    Point::new(a.x + (b.x - a.x) * t, y)
 }
 
 /// The affine taking `from` onto `to`.

@@ -28,6 +28,7 @@
     "model": "Modelo",
     "newChat": "Novo chat",
     "placeholder": "Peça ao Koharu para trabalhar neste projeto…",
+    "properties": "Propriedades",
     "reasoning": "Raciocínio",
     "send": "Enviar",
     "thinking": "Pensando…",
@@ -40,6 +41,7 @@
   },
   "canvas": {
     "empty": "Selecione uma página para começar.",
+    "fit": "Ajustar à janela",
     "notice": {
       "eraser_needs_raster": "Selecione uma camada raster para apagar."
     }
@@ -172,6 +174,7 @@
     "borderColor": "Cor do contorno",
     "borderWidth": "Largura do contorno",
     "chooseFontSize": "Escolher tamanho da fonte",
+    "color": "Cor",
     "decreaseBorderWidth": "Diminuir largura do contorno",
     "font": "Fonte",
     "fontSize": "Tamanho da fonte",
@@ -254,6 +257,7 @@
     "help": "Ajuda",
     "history": "Histórico",
     "import": "Importar páginas",
+    "inpaintMask": "Mostrar máscara de preenchimento",
     "redo": "Refazer",
     "selectAllLayers": "Selecionar todas as camadas",
     "settings": "Configurações",
@@ -406,10 +410,17 @@
       "subscription": "Assinatura",
       "title": "Provedores"
     },
+    "shortcuts": {
+      "description": "Atalhos de uma tecla ficam disponíveis quando nenhum campo de texto está em foco.",
+      "inputLabel": "Atalho de {{action}}",
+      "title": "Atalhos",
+      "tools": "Ferramentas"
+    },
     "tabs": {
       "appearance": "Aparência",
       "pipeline": "Pipeline",
       "providers": "Provedores",
+      "shortcuts": "Atalhos",
       "typesetting": "Renderizador"
     },
     "title": "Configurações",
@@ -456,12 +467,6 @@
   },
   "status": {
     "zoom": "Zoom"
-  },
-  "story": {
-    "noText": "Não há texto nesta página.",
-    "sfx": "Efeito sonoro",
-    "title": "História",
-    "translate": "Traduzir {{name}}"
   },
   "tools": {
     "brushSize": "Tamanho do pincel",

@@ -28,6 +28,7 @@
     "model": "Model",
     "newChat": "Yeni sohbet",
     "placeholder": "Koharu’dan bu proje üzerinde çalışmasını isteyin…",
+    "properties": "Özellikler",
     "reasoning": "Akıl yürütme",
     "send": "Gönder",
     "thinking": "Düşünüyor…",
@@ -40,6 +41,7 @@
   },
   "canvas": {
     "empty": "Başlamak için bir sayfa seçin.",
+    "fit": "Pencereye Sığdır",
     "notice": {
       "eraser_needs_raster": "Silmek için bir raster katman seçin."
     }
@@ -172,6 +174,7 @@
     "borderColor": "Kenarlık rengi",
     "borderWidth": "Kenarlık genişliği",
     "chooseFontSize": "Yazı tipi boyutunu seç",
+    "color": "Renk",
     "decreaseBorderWidth": "Kenarlık genişliğini azalt",
     "font": "Yazı tipi",
     "fontSize": "Yazı tipi boyutu",
@@ -254,6 +257,7 @@
     "help": "Yardım",
     "history": "Geçmiş",
     "import": "Sayfaları İçe Aktar",
+    "inpaintMask": "Doldurma Maskesini Göster",
     "redo": "Yinele",
     "selectAllLayers": "Tüm Katmanları Seç",
     "settings": "Ayarlar",
@@ -406,10 +410,17 @@
       "subscription": "Abonelik",
       "title": "Sağlayıcılar"
     },
+    "shortcuts": {
+      "description": "Tek tuşlu kısayollar, bir metin alanına odaklanılmadığında kullanılabilir.",
+      "inputLabel": "{{action}} kısayolu",
+      "title": "Kısayollar",
+      "tools": "Araçlar"
+    },
     "tabs": {
       "appearance": "Görünüm",
       "pipeline": "İşlem hattı",
       "providers": "Sağlayıcılar",
+      "shortcuts": "Kısayollar",
       "typesetting": "Oluşturucu"
     },
     "title": "Ayarlar",
@@ -456,12 +467,6 @@
   },
   "status": {
     "zoom": "Yakınlaştırma"
-  },
-  "story": {
-    "noText": "Bu sayfada metin yok.",
-    "sfx": "Ses efekti",
-    "title": "Hikâye",
-    "translate": "{{name}} öğesini çevir"
   },
   "tools": {
     "brushSize": "Fırça boyutu",

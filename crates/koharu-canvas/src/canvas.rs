@@ -28,7 +28,10 @@ use crate::{
     Brush, Camera, Colors, Effect, Story, Tool,
     area::Area,
     control::{Control, REACH},
-    draw::{Target, color, overlay::Overlay},
+    draw::{
+        Target, color,
+        overlay::{MASKS, Overlay},
+    },
     gesture::{Context, Gesture, GestureLook, Press},
     selection::Selection,
     snapshot::{Part, Snapshot},
@@ -54,6 +57,8 @@ pub struct Canvas {
     tool: Tool,
     brush: Brush,
     story: Story,
+    /// Whether the page's inpainting masks show.
+    masks: bool,
     /// Story's numbers laid out, by number and whether it's a sound
     /// effect's, until the colours change.
     numbers: RefCell<HashMap<(usize, bool), Label>>,
@@ -95,6 +100,7 @@ struct Look {
     tool: Tool,
     brush: Brush,
     story: Story,
+    masks: bool,
     selection: Vec<LayerId>,
     hover: Option<LayerId>,
     anchors: Vec<usize>,
@@ -125,6 +131,7 @@ impl Canvas {
             tool: Tool::default(),
             brush: Brush::default(),
             story: Story::default(),
+            masks: false,
             numbers: RefCell::new(HashMap::new()),
             selection: Selection::default(),
             area: None,
@@ -195,6 +202,13 @@ impl Canvas {
     /// What the Story panel shows, which the canvas numbers the texts for.
     pub fn set_story(&mut self, story: Story) {
         self.story = story;
+    }
+
+    /// Shows or hides the page's inpainting masks, as the fork's mask toggle
+    /// did; while they show, the brush paints them and the eraser clears
+    /// them.
+    pub fn set_masks(&mut self, shown: bool) {
+        self.masks = shown;
     }
 
     pub fn camera(&self) -> TranslateScale {
@@ -531,8 +545,10 @@ impl Canvas {
             selection: &self.selection,
             tool: self.tool,
             brush: self.brush,
+            masks: self.masks,
             colors: self.colors,
             session: &self.session,
+            renderer: &self.renderer,
         })
     }
 
@@ -758,6 +774,7 @@ impl Canvas {
             tool: self.tool,
             brush: self.brush,
             story: self.story,
+            masks: self.masks,
             selection: self.selection.ids().to_vec(),
             hover: self.selection.hover(),
             anchors: self.selection.anchors().to_vec(),
@@ -829,6 +846,19 @@ impl Canvas {
                 ),
             };
             overlay.isolate(cx.snapshot.size().to_rect(), tint, clear.as_ref())?;
+        }
+        if self.masks && part.is_none() {
+            let frame = cx.snapshot.frame();
+            let masks: Vec<_> = cx
+                .snapshot
+                .fills()
+                .iter()
+                .filter(|fill| fill.mask.is_some_and(|(_, shown)| shown))
+                .filter_map(|fill| frame.layer(fill.picture))
+                .filter(|drawn| drawn.visible())
+                .filter_map(|drawn| drawn.mask())
+                .collect();
+            overlay.masks(cx.snapshot.size().to_rect(), &masks, MASKS)?;
         }
         let isolated = part.map(|(id, _)| id);
         // The text typed into shows as typed, not as the page last drew it.

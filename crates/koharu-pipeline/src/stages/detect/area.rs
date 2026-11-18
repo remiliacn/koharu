@@ -11,7 +11,10 @@ use koharu_ml::koharu_layout_highres::Layout;
 use koharu_scene::{Content, Layer, LayerId, Op, Rect};
 use kurbo::{BezPath, Point, Shape as _};
 
-use super::layers::Place;
+use super::{
+    layers::{Place, claimed},
+    translated,
+};
 use crate::Area;
 
 /// The area's rectangle on a `width` by `height` page; `None` when it's off
@@ -38,7 +41,12 @@ pub(super) fn within(layout: Layout, crop: Rect, area: &Area, width: u32, height
         .into_iter()
         .map(|mut lettering| {
             let [x0, y0, x1, y1] = lettering.bbox;
-            lettering.bbox = [x0 + dx as f32, y0 + dy as f32, x1 + dx as f32, y1 + dy as f32];
+            lettering.bbox = [
+                x0 + dx as f32,
+                y0 + dy as f32,
+                x1 + dx as f32,
+                y1 + dy as f32,
+            ];
             lettering.mask.x += dx;
             lettering.mask.y += dy;
             lettering.bubble = None;
@@ -86,7 +94,10 @@ pub(super) fn changes(
                 parent,
                 index: *count,
             };
-            *count += 1;
+            // A kept block's lettering isn't added again, so takes no place.
+            if !claimed(bbox, &kept) {
+                *count += 1;
+            }
             place
         })
         .collect();
@@ -100,8 +111,8 @@ pub(super) fn changes(
 }
 
 /// The blocks among `layers` whose source's centre `area` holds into
-/// `removed`, unless they or a layer they're in is locked, and the boxes of
-/// the rest into `kept`.
+/// `removed`, unless they or a layer they're in is locked or they're
+/// translated, and the boxes of the rest into `kept`.
 fn blocks(
     layers: &[Layer],
     area: &Area,
@@ -117,7 +128,7 @@ fn blocks(
                     continue;
                 };
                 let bbox = [bounds.x0, bounds.y0, bounds.x1, bounds.y1].map(|value| value as f32);
-                if !locked && holds(area, centre(bbox)) {
+                if !locked && !translated(layer) && holds(area, centre(bbox)) {
                     removed.push(layer.id);
                 } else {
                     kept.push(bbox);
@@ -215,7 +226,10 @@ mod tests {
             height: 60,
             // Centred 15 and 55 across the page, the area's left half
             // holding only the first.
-            lettering: vec![lettering([0.0, 0.0, 10.0, 10.0]), lettering([40.0, 0.0, 50.0, 10.0])],
+            lettering: vec![
+                lettering([0.0, 0.0, 10.0, 10.0]),
+                lettering([40.0, 0.0, 50.0, 10.0]),
+            ],
             bubbles: Vec::new(),
             panels: Vec::new(),
         };

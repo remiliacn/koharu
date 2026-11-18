@@ -81,11 +81,18 @@ fn raster(name: &Path) -> bool {
     )
 }
 
-/// Reads a page file's pages: their images, encoded, in order.
-type Reader = fn(&Path) -> anyhow::Result<Vec<Vec<u8>>>;
+/// Reads a page file's pages in order: each one's name and its image,
+/// encoded.
+type Reader = fn(&Path) -> anyhow::Result<Members>;
 
-/// An archive's images by member name.
+/// Images by name: an archive's by member name, a file's by its own.
 type Members = Vec<(String, Vec<u8>)>;
+
+/// `path`'s last part, without its folders.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+}
 
 /// How a page file's pages are read, or `None` when it holds none.
 fn reader(path: &Path) -> Option<Reader> {
@@ -93,7 +100,7 @@ fn reader(path: &Path) -> Option<Reader> {
         "zip" | "cbz" => Some(extract_zip),
         "rar" | "cbr" => Some(extract_rar),
         "pdf" => Some(render_pdf),
-        _ if raster(path) => Some(|path| Ok(vec![fs_err::read(path)?])),
+        _ if raster(path) => Some(|path| Ok(vec![(file_name(path), fs_err::read(path)?)])),
         _ => None,
     }
 }
@@ -146,7 +153,7 @@ pub async fn import(
     });
     let app = Arc::clone(&app);
     Ok(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let pages: Vec<Vec<u8>> = paths
+        let pages: Members = paths
             .into_par_iter()
             .map(|path| {
                 let read = reader(&path).with_context(|| {
@@ -161,11 +168,12 @@ pub async fn import(
         let session = app.session()?;
         let start = session.lock().project().pages().count();
         let mut ops = Vec::with_capacity(pages.len() * 2);
-        for (index, bytes) in pages.into_iter().enumerate() {
+        for (index, (name, bytes)) in pages.into_iter().enumerate() {
             let background = Some(Hash::of(&bytes));
             ops.push(Op::AddFile { bytes });
             ops.push(Op::AddPage {
                 id: None,
+                name: Some(name),
                 index: start + index,
                 size: None,
                 background,
@@ -180,17 +188,21 @@ pub async fn import(
     .await??)
 }
 
-/// An archive's images in name order, numbers by value.
-fn in_name_order(path: &Path, mut images: Members) -> anyhow::Result<Vec<Vec<u8>>> {
+/// An archive's images in name order, numbers by value, each named without
+/// its folders.
+fn in_name_order(path: &Path, mut images: Members) -> anyhow::Result<Members> {
     if images.is_empty() {
         bail!("{} holds no images", path.display());
     }
     alphanumeric_sort::sort_slice_by_str_key(&mut images, |(name, _)| name);
-    Ok(images.into_iter().map(|(_, bytes)| bytes).collect())
+    Ok(images
+        .into_iter()
+        .map(|(name, bytes)| (file_name(Path::new(&name)), bytes))
+        .collect())
 }
 
 /// A ZIP or CBZ archive's images.
-fn extract_zip(path: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
+fn extract_zip(path: &Path) -> anyhow::Result<Members> {
     let mut archive = zip::ZipArchive::new(File::open(path)?)
         .with_context(|| format!("failed to read the archive {}", path.display()))?;
     let mut images = Vec::new();
@@ -238,7 +250,7 @@ impl Write for LastMember {
 }
 
 /// A RAR or CBR archive's images.
-fn extract_rar(path: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
+fn extract_rar(path: &Path) -> anyhow::Result<Members> {
     let archive = ArchiveReader::read_path(path)
         .with_context(|| format!("failed to open the archive {}", path.display()))?;
     let images = Rc::new(RefCell::new(Vec::new()));
@@ -256,8 +268,9 @@ fn extract_rar(path: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
     in_name_order(path, images.take())
 }
 
-/// A PDF's pages, each rendered with hayro.
-fn render_pdf(path: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
+/// A PDF's pages, each rendered with hayro and named after the PDF and its
+/// number, as `book-001.png`.
+fn render_pdf(path: &Path) -> anyhow::Result<Members> {
     let pdf = Pdf::new(fs_err::read(path)?)
         .map_err(|error| anyhow::anyhow!("failed to parse {}: {error:?}", path.display()))?;
     let pages = pdf.pages();
@@ -274,15 +287,19 @@ fn render_pdf(path: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
         y_scale: PDF_SCALE,
         bg_color: WHITE,
     };
+    let stem = path
+        .file_stem()
+        .map_or_else(|| "page".into(), |stem| stem.to_string_lossy());
     pages
         .iter()
         .enumerate()
         .map(|(index, page)| {
-            render(page, &cache, &interpreter, &settings, &pixmap)
+            let png = render(page, &cache, &interpreter, &settings, &pixmap)
                 .into_png()
                 .with_context(|| {
                     format!("failed to encode page {} of {}", index + 1, path.display())
-                })
+                })?;
+            Ok((format!("{stem}-{:03}.png", index + 1), png))
         })
         .collect()
 }

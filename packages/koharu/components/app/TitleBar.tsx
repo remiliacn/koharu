@@ -41,6 +41,9 @@ export function TitleBar() {
   const history = project?.history
   const historyOpen = useKoharuStore((state) => state.historyOpen)
   const setHistoryOpen = useKoharuStore((state) => state.setHistoryOpen)
+  const masksShown = useKoharuStore((state) => state.masksShown)
+  const setMasksShown = useKoharuStore((state) => state.setMasksShown)
+  const masksShortcut = useKoharuStore((state) => state.shortcuts.masks)
   const selectedLayers = useKoharuStore((state) => state.selectedLayers)
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
@@ -225,6 +228,15 @@ export function TitleBar() {
                 closeOnClick
               >
                 {t('menu.history')}
+              </MenubarCheckboxItem>
+              <MenubarCheckboxItem
+                disabled={!page}
+                checked={masksShown}
+                onCheckedChange={setMasksShown}
+                closeOnClick
+              >
+                {t('menu.inpaintMask')}
+                <MenubarShortcut>{masksShortcut.toUpperCase()}</MenubarShortcut>
               </MenubarCheckboxItem>
             </MenubarContent>
           </MenubarMenu>

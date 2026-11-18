@@ -4,7 +4,7 @@
 //! and changes nothing: it answers effects, which the canvas applies.
 
 use cursor_icon::CursorIcon;
-use koharu_renderer::Frame;
+use koharu_renderer::{Frame, Renderer};
 use koharu_scene::{LayerId, Session};
 use kurbo::{Point, Rect};
 use parking_lot::Mutex;
@@ -33,9 +33,14 @@ pub(crate) struct Context<'a> {
     pub selection: &'a Selection,
     pub tool: Tool,
     pub brush: Brush,
+    /// Whether the page's inpainting masks show, which then take the brush
+    /// and the eraser.
+    pub masks: bool,
     pub colors: Colors,
     /// Locked only to read pixels.
     pub session: &'a Mutex<Session>,
+    /// What a resize lays its text out with as it goes.
+    pub renderer: &'a Renderer,
 }
 
 /// What a press starts, what it answers at once, and the anchors it picks

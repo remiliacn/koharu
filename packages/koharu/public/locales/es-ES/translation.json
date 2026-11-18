@@ -28,6 +28,7 @@
     "model": "Modelo",
     "newChat": "Nuevo chat",
     "placeholder": "Pide a Koharu que trabaje en este proyecto…",
+    "properties": "Propiedades",
     "reasoning": "Razonamiento",
     "send": "Enviar",
     "thinking": "Pensando…",
@@ -40,6 +41,7 @@
   },
   "canvas": {
     "empty": "Selecciona una página para empezar.",
+    "fit": "Ajustar a la ventana",
     "notice": {
       "eraser_needs_raster": "Selecciona una capa ráster para borrar."
     }
@@ -172,6 +174,7 @@
     "borderColor": "Color del contorno",
     "borderWidth": "Ancho del contorno",
     "chooseFontSize": "Elegir tamaño de fuente",
+    "color": "Color",
     "decreaseBorderWidth": "Reducir ancho del contorno",
     "font": "Fuente",
     "fontSize": "Tamaño de fuente",
@@ -254,6 +257,7 @@
     "help": "Ayuda",
     "history": "Historia",
     "import": "Importar páginas",
+    "inpaintMask": "Mostrar máscara de relleno",
     "redo": "Rehacer",
     "selectAllLayers": "Seleccionar todas las capas",
     "settings": "Ajustes",
@@ -406,10 +410,17 @@
       "subscription": "Suscripción",
       "title": "Proveedores"
     },
+    "shortcuts": {
+      "description": "Los atajos de una tecla están disponibles cuando ningún campo de texto tiene el foco.",
+      "inputLabel": "Atajo de {{action}}",
+      "title": "Atajos",
+      "tools": "Herramientas"
+    },
     "tabs": {
       "appearance": "Apariencia",
       "pipeline": "Canalización",
       "providers": "Proveedores",
+      "shortcuts": "Atajos",
       "typesetting": "Renderizador"
     },
     "title": "Ajustes",
@@ -456,12 +467,6 @@
   },
   "status": {
     "zoom": "Zoom"
-  },
-  "story": {
-    "noText": "No hay texto en esta página.",
-    "sfx": "Efecto de sonido",
-    "title": "Guion",
-    "translate": "Traducir {{name}}"
   },
   "tools": {
     "brushSize": "Tamaño del pincel",

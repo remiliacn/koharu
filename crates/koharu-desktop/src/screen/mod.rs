@@ -132,10 +132,12 @@ impl Screen {
         });
     }
 
-    /// Moves the canvas to the element's rectangle, in CSS pixels.
-    pub fn set_viewport(&self, viewport: Rect) {
+    /// Moves the canvas to the element's rectangle, in CSS pixels, which are
+    /// `scale` physical pixels each.
+    pub fn set_viewport(&self, viewport: Rect, scale: f64) {
         self.change(move |main| {
             main.viewport = viewport;
+            main.css = (scale.is_finite() && scale > 0.0).then_some(scale);
             main.place();
         });
     }
@@ -221,6 +223,16 @@ impl Screen {
             main.settings.story = story;
             if let Some(canvas) = &mut main.canvas {
                 canvas.set_story(story);
+            }
+        });
+    }
+
+    /// Shows or hides the page's inpainting masks.
+    pub fn set_masks(&self, shown: bool) {
+        self.change(move |main| {
+            main.settings.masks = shown;
+            if let Some(canvas) = &mut main.canvas {
+                canvas.set_masks(shown);
             }
         });
     }
@@ -326,6 +338,10 @@ struct Main {
     canvas: Option<Canvas>,
     /// The canvas element's rectangle, in CSS pixels.
     viewport: Rect,
+    /// Physical pixels to a CSS pixel, the page's `devicePixelRatio`: the
+    /// window's scale times the interface's zoom, which a user's Ctrl+minus
+    /// or Ctrl+wheel can leave other than 100%.
+    css: Option<f64>,
     /// What the interface set, for a canvas made later.
     settings: Settings,
     /// The camera as the interface last heard it.
@@ -368,6 +384,7 @@ struct Settings {
     brush: Brush,
     colors: Colors,
     story: Story,
+    masks: bool,
 }
 
 impl Main {
@@ -381,9 +398,11 @@ impl Main {
         self.view.as_ref().and_then(OffscreenView::window)
     }
 
-    /// Physical pixels to a device-independent one.
+    /// Physical pixels to a CSS pixel: the page's, as the viewport is
+    /// measured in them, else the window's scale.
     fn scale(&self) -> f64 {
-        self.window().map_or(1.0, |window| window.scale_factor())
+        self.css
+            .unwrap_or_else(|| self.window().map_or(1.0, |window| window.scale_factor()))
     }
 
     /// The canvas's place in the window, in whole physical pixels.
@@ -405,6 +424,7 @@ impl Main {
             canvas.set_brush(settings.brush);
             canvas.set_colors(settings.colors);
             canvas.set_story(settings.story);
+            canvas.set_masks(settings.masks);
             canvas
         });
         if self.canvas.is_none() {
@@ -733,6 +753,7 @@ pub fn open(
         captures: Vec::new(),
         canvas: None,
         viewport: Rect::ZERO,
+        css: None,
         settings: Settings::default(),
         camera: None,
         selection: None,

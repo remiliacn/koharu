@@ -1,6 +1,6 @@
 'use client'
 
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, X } from 'lucide-react'
 import { type ReactNode, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -22,6 +22,7 @@ import type {
   TranslatorConfig,
 } from '@koharu/ipc/protocol'
 import { Badge } from '@koharu/ui/components/badge'
+import { Button } from '@koharu/ui/components/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@koharu/ui/components/popover'
 import {
   Select,
@@ -142,6 +143,33 @@ export function PipelinePreferences({
           />
         }
       >
+        <PreferenceRow
+          title={t('settings.pipeline.translator.fallback')}
+          description={t('settings.pipeline.translator.fallbackDescription')}
+        >
+          <div className='flex w-full min-w-0 items-center gap-1'>
+            <TranslatorModel
+              value={translator.fallback ?? ''}
+              models={models}
+              label={t('settings.pipeline.translator.fallback')}
+              onChange={(fallback) =>
+                onChange({ ...value, translator: { ...translator, fallback } })
+              }
+            />
+            {translator.fallback && (
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon'
+                aria-label={t('settings.pipeline.translator.clearFallback')}
+                className='size-8 shrink-0 text-muted-foreground'
+                onClick={() => onChange({ ...value, translator: { ...translator, fallback: '' } })}
+              >
+                <X className='size-3.5' />
+              </Button>
+            )}
+          </div>
+        </PreferenceRow>
         <TranslatorOptions
           value={translator}
           onChange={(next) => onChange({ ...value, translator: next })}

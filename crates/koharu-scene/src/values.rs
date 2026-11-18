@@ -293,9 +293,11 @@ pub enum Frame {
 }
 
 impl Frame {
-    /// A path frame's inset unless one is given: Comicraft's letter width of
-    /// air.
-    pub const DEFAULT_INSET: f64 = 1.0;
+    /// A path frame's inset unless one is given: a quarter em of air, a
+    /// slight margin off the balloon that leaves its text most of the room,
+    /// where a whole em, Comicraft's letter width, cost best fit a third of
+    /// the size a balloon held.
+    pub const DEFAULT_INSET: f64 = 0.25;
 }
 
 fn one_em() -> f64 {

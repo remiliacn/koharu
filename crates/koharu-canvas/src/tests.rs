@@ -500,6 +500,78 @@ fn box_text_resizes_both_ways_from_a_corner() {
     );
 }
 
+/// A path frame's corners, in order.
+fn corners(frame: &Value) -> Vec<Point> {
+    let path = BezPath::from_svg(frame["path"]["path"].as_str().expect("a path")).expect("SVG");
+    path.elements()
+        .iter()
+        .filter_map(|element| match *element {
+            kurbo::PathEl::MoveTo(point) | kurbo::PathEl::LineTo(point) => Some(point),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_block_resizes_into_the_rectangle_its_handles_outline_with_a_slight_inset() {
+    let Some((mut fixture, block)) = squared() else {
+        return;
+    };
+    fixture.canvas.set_tool(Tool::Select);
+    // The south-east corner of the square path, dragged out.
+    let effects = gesture(&mut fixture.canvas, (200.0, 200.0), (240.0, 260.0));
+    assert_eq!(apply(&mut fixture, effects), ["resize"]);
+    let frame = &layer(&fixture, block)["translation"]["frame"];
+    assert!(frame.get("box").is_none(), "{frame}");
+    let bounds = BezPath::from_svg(frame["path"]["path"].as_str().expect("a path"))
+        .expect("SVG")
+        .bounding_box();
+    assert_eq!(bounds, kurbo::Rect::new(100.0, 100.0, 240.0, 260.0));
+    assert_eq!(frame["path"]["fit"], "best");
+    assert_eq!(frame["path"]["anchor"], "center");
+    assert_eq!(frame["path"]["inset"], 0.25);
+}
+
+#[test]
+fn a_block_in_a_round_balloon_flows_in_its_shape_within_the_rectangle() {
+    let Some(mut fixture) = unscaled(vec![
+        json!({"op": "add_layer", "id": "$balloon", "page": "$page", "index": 0,
+            "layer": {"kind": "balloon", "outline": "M200 100L300 160L200 220L100 160Z"}}),
+        json!({"op": "add_layer", "page": "$page", "parent": "$balloon", "index": 0,
+        "layer": {"kind": "block", "source": {"content": "やあ"}, "translation": {
+            "content": "Hi",
+            "frame": {"box": {"bounds": {"x": 170.0, "y": 140.0, "width": 60.0, "height": 40.0}, "fit": "best"}},
+        }}}),
+    ]) else {
+        return;
+    };
+    let block = {
+        let project = fixture.session.lock().project();
+        project.page(fixture.page).expect("the page").layers[0].children[0].id
+    };
+    fixture.canvas.set_tool(Tool::Select);
+    fixture.canvas.select(vec![block]);
+    // Dragged far past the diamond balloon's right and bottom.
+    let effects = gesture(&mut fixture.canvas, (230.0, 180.0), (330.0, 260.0));
+    assert_eq!(apply(&mut fixture, effects), ["resize"]);
+    let frame = &layer(&fixture, block)["translation"]["frame"];
+    let diamond = BezPath::from_svg("M200 100L300 160L200 220L100 160Z").expect("SVG");
+    let inside = corners(frame);
+    assert!(inside.len() > 4, "{frame}");
+    for point in inside {
+        // On the diamond's edge or inside it, and in the dragged rectangle.
+        let near = diamond.contains(point)
+            || diamond.segments().any(|segment| {
+                kurbo::ParamCurveNearest::nearest(&segment, point, 1e-6).distance_sq < 1e-6
+            });
+        assert!(near, "{point:?} leaves the balloon");
+        assert!(
+            point.x >= 170.0 - 1e-6 && point.y >= 140.0 - 1e-6,
+            "{point:?}"
+        );
+    }
+}
+
 #[test]
 fn a_locked_layer_does_not_move() {
     let Some(mut fixture) = unscaled(vec![shape(
@@ -1075,6 +1147,61 @@ fn a_selected_part_shows_on_its_own() {
             [r, g, b]
         );
     }
+}
+
+/// The fork's mask toggle: the page's masks show tinted, the eraser clears
+/// them with nothing selected, uncovering the scan, and the brush paints
+/// them back.
+#[test]
+fn shown_masks_tint_the_page_and_take_the_eraser_and_the_brush() {
+    let Some((mut fixture, block, cleanup)) = painted_cleanup() else {
+        return;
+    };
+    let mask: LayerId =
+        serde_json::from_value(layer(&fixture, block)["mask"]["id"].clone()).expect("a mask");
+    let coverage = |fixture: &Fixture, at: usize| {
+        let tiles = fixture.session.lock().tiles(mask, None).expect("tiles");
+        tiles.tiles.first().map_or(0, |tile| tile.pixels[at])
+    };
+    let side = koharu_scene::Tile::SIZE as usize;
+    let canvas = &mut fixture.canvas;
+    canvas.draw().expect("a draw");
+    let plain = canvas.snapshot().expect("pixels");
+    canvas.set_masks(true);
+    canvas.draw().expect("a draw");
+    let tinted = canvas.snapshot().expect("pixels");
+    assert_ne!(tinted.get_pixel(20, 20), plain.get_pixel(20, 20));
+    assert_eq!(tinted.get_pixel(60, 60), plain.get_pixel(60, 60));
+
+    canvas.set_tool(Tool::Eraser);
+    canvas.set_brush(brush(6.0, [0.0, 0.0, 0.0, 1.0]));
+    let effects = gesture(canvas, (20.0, 20.0), (20.0, 20.0));
+    assert_eq!(apply(&mut fixture, effects), ["erase"]);
+    assert_eq!(coverage(&fixture, 20 * side + 20), 0);
+    assert_eq!(coverage(&fixture, 12 * side + 12), 255);
+    assert_eq!(pixel(&fixture, cleanup, (20, 20)), [0, 128, 255, 255]);
+
+    fixture.canvas.set_tool(Tool::Draw);
+    let effects = gesture(&mut fixture.canvas, (20.0, 20.0), (20.0, 20.0));
+    assert_eq!(apply(&mut fixture, effects), ["paint"]);
+    assert_eq!(coverage(&fixture, 20 * side + 20), 255);
+    assert_eq!(layers(&fixture), [block]);
+}
+
+/// With the masks hidden and nothing selected, the eraser clears the
+/// clean-ups under it back to the scan, as the fork's eraser cleared its
+/// clean-up layer.
+#[test]
+fn the_eraser_with_nothing_selected_clears_the_cleanup_under_it() {
+    let Some((mut fixture, _, cleanup)) = painted_cleanup() else {
+        return;
+    };
+    fixture.canvas.set_tool(Tool::Eraser);
+    fixture.canvas.set_brush(brush(6.0, [0.0, 0.0, 0.0, 1.0]));
+    let effects = gesture(&mut fixture.canvas, (20.0, 20.0), (20.0, 20.0));
+    assert_eq!(apply(&mut fixture, effects), ["erase"]);
+    assert_eq!(pixel(&fixture, cleanup, (20, 20))[3], 0);
+    assert_eq!(pixel(&fixture, cleanup, (12, 12))[3], 255);
 }
 
 #[test]

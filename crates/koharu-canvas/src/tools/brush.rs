@@ -13,7 +13,7 @@ use vello_cpu::{Pixmap, RenderContext, Resources, color::palette::css::WHITE};
 use super::added;
 use crate::{
     Effect, Notice, Tool,
-    draw::overlay::Overlay,
+    draw::overlay::{MASKS, Overlay},
     gesture::{Context, Gesture, GestureLook, Press},
     view::Sample,
 };
@@ -22,17 +22,31 @@ use crate::{
 /// pixels.
 const TOLERANCE: f64 = 0.1;
 
-/// A brush tool's press starts a stroke: the draw tool's onto the one
-/// selected raster or a new one, the eraser's onto the one selected.
+/// A brush tool's press starts a stroke. While the masks show, the draw
+/// tool and the eraser stroke them, whatever is selected, as the fork's
+/// mask overlay took them. Otherwise the draw tool paints the one selected
+/// raster or a new one, and the eraser erases the one selected or, with
+/// none, the clean-ups and fills under it, as the fork's eraser cleared its
+/// clean-up layer back to the scan.
 pub(crate) fn press(cx: &Context, sample: Sample) -> Press {
-    let target = match cx.tool {
-        Tool::Remove => None,
-        _ => cx
-            .selection
-            .single()
-            .filter(|&layer| cx.snapshot.writable(layer).is_some()),
+    let selected = cx
+        .selection
+        .single()
+        .filter(|&layer| cx.snapshot.writable(layer).is_some());
+    let onto = match (cx.tool, selected) {
+        (Tool::Remove, _) => Onto::Page,
+        _ if cx.masks => Onto::Masks,
+        (_, Some(layer)) => Onto::Layer(layer),
+        (Tool::Eraser, None) => Onto::Fills,
+        (_, None) => Onto::Page,
     };
-    if cx.tool == Tool::Eraser && target.is_none() {
+    let erasable = || {
+        cx.snapshot
+            .fills()
+            .iter()
+            .any(|fill| cx.snapshot.writable(fill.picture).is_some())
+    };
+    if onto == Onto::Fills && !erasable() {
         return Press::answers(vec![Effect::Notice(Notice::EraserNeedsRaster)]);
     }
     let points = vec![sample.page];
@@ -40,16 +54,28 @@ pub(crate) fn press(cx: &Context, sample: Sample) -> Press {
         tool: cx.tool,
         outline: outline(&points, cx.brush.diameter),
         points,
-        target,
+        onto,
     }))
 }
 
-/// A brush stroke through page points, onto `target` or, for the draw tool
-/// with none, a new raster.
+/// Where a stroke goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Onto {
+    /// The one selected raster, clean-up, or mask.
+    Layer(LayerId),
+    /// Every inpainting mask it reaches.
+    Masks,
+    /// The eraser's: every clean-up and fill under it.
+    Fills,
+    /// The draw tool's new raster, or the remove tool's inpainting.
+    Page,
+}
+
+/// A brush stroke through page points.
 pub(crate) struct Stroke {
     tool: Tool,
     points: Vec<Point>,
-    target: Option<LayerId>,
+    onto: Onto,
     /// The points' outline, expanded again only when a point arrives.
     outline: BezPath,
 }
@@ -87,12 +113,17 @@ impl Stroke {
 
     pub fn preview(&self, cx: &Context, overlay: &mut Overlay) {
         // A mask takes coverage, not colour.
-        let colored = self
-            .target
-            .and_then(|layer| cx.snapshot.writable(layer))
-            .is_none_or(|(_, format)| format == PixelFormat::Rgba8);
+        let colored = match self.onto {
+            Onto::Layer(layer) => cx
+                .snapshot
+                .writable(layer)
+                .is_none_or(|(_, format)| format == PixelFormat::Rgba8),
+            Onto::Masks => false,
+            Onto::Fills | Onto::Page => true,
+        };
         let tint = match self.tool {
             Tool::Draw if colored => cx.brush.color,
+            Tool::Draw if self.onto == Onto::Masks => MASKS,
             _ => {
                 let Rgba([r, g, b, _]) = cx.colors.selection;
                 Rgba([r, g, b, 0.4])
@@ -109,9 +140,8 @@ impl Stroke {
     }
 
     /// A paint or erase stroke's coverage over the page pixels `rect` as one
-    /// write to its raster, clean-up, or mask, read and composited in its own
-    /// coordinates; painting with no target adds a raster at the top of the
-    /// page, selected. A mask takes coverage on an alpha scale, as Clip Studio
+    /// edit of each raster, clean-up, or mask it goes to; painting onto the
+    /// page adds a raster at its top, selected. A mask takes coverage on an alpha scale, as Clip Studio
     /// Paint's does: a stroke of any colour uncovers the clean-up, and the
     /// eraser hides it.
     fn stroked(
@@ -124,49 +154,46 @@ impl Stroke {
             Tool::Draw => "paint",
             _ => "erase",
         };
-        let target = self
-            .target
-            .and_then(|layer| Some((layer, cx.snapshot.writable(layer)?)));
-        let (ops, created) = match target {
-            Some((layer, (offset, format))) => {
-                let own = koharu_scene::Rect {
-                    x: rect.x - offset.x,
-                    y: rect.y - offset.y,
-                    ..rect
-                };
-                let mut pixels = cx.session.lock().pixels(layer, own)?;
-                match (self.tool, format) {
-                    (Tool::Draw, PixelFormat::Rgba8) => {
-                        let mut under = RgbaImage::from_raw(own.width, own.height, pixels)
-                            .ok_or_else(|| anyhow::anyhow!("a raster's pixels are RGBA"))?;
-                        imageops::overlay(&mut under, &paint(rect, coverage, cx.brush.color), 0, 0);
-                        pixels = under.into_raw();
-                    }
-                    (Tool::Draw, PixelFormat::Gray8) => {
-                        uncovered(&mut pixels, coverage, cx.brush.color.0[3]);
-                    }
-                    (_, PixelFormat::Rgba8) => erased(&mut pixels, coverage, 4),
-                    (_, PixelFormat::Gray8) => erased(&mut pixels, coverage, 1),
-                }
-                let write = Op::WritePixels {
-                    layer: Ref::from(layer),
-                    rect: own,
-                    pixels,
-                };
-                (vec![write], None)
-            }
-            None if self.tool == Tool::Draw => {
-                let pixels = paint(rect, coverage, cx.brush.color).into_raw();
-                let (id, add) = added(cx.snapshot.page(), Content::Raster(Raster::default()));
-                let write = Op::WritePixels {
-                    layer: Ref::from(id),
-                    rect,
-                    pixels,
-                };
-                (vec![add, write], Some(id))
-            }
-            None => return Ok(Vec::new()),
+        let bounds = kurbo::Rect::new(
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.x) + f64::from(rect.width),
+            f64::from(rect.y) + f64::from(rect.height),
+        );
+        let fills = || cx.snapshot.fills().into_iter();
+        let layers: Vec<LayerId> = match self.onto {
+            Onto::Layer(layer) => vec![layer],
+            // Painting reaches the masks of the fills it's over; erasing
+            // clears every mask, wherever it has grown.
+            Onto::Masks => fills()
+                .filter(|fill| {
+                    self.tool != Tool::Draw
+                        || fill.region.is_some_and(|region| region.overlaps(bounds))
+                })
+                .filter_map(|fill| fill.mask.map(|(mask, _)| mask))
+                .collect(),
+            Onto::Fills => fills().map(|fill| fill.picture).collect(),
+            Onto::Page => Vec::new(),
         };
+        let mut ops = Vec::new();
+        for layer in layers {
+            ops.extend(self.written(cx, layer, rect, coverage)?);
+        }
+        let mut created = None;
+        if self.onto == Onto::Page && self.tool == Tool::Draw {
+            let pixels = paint(rect, coverage, cx.brush.color).into_raw();
+            let (id, add) = added(cx.snapshot.page(), Content::Raster(Raster::default()));
+            ops.push(add);
+            ops.push(Op::WritePixels {
+                layer: Ref::from(id),
+                rect,
+                pixels,
+            });
+            created = Some(id);
+        }
+        if ops.is_empty() {
+            return Ok(Vec::new());
+        }
         let edit = Effect::Edit(Edit {
             label: label.to_owned(),
             ops,
@@ -174,6 +201,46 @@ impl Stroke {
         Ok(std::iter::once(edit)
             .chain(created.map(|id| Effect::Selection(vec![id])))
             .collect())
+    }
+
+    /// The stroke's coverage over the page pixels `rect` written to `layer`,
+    /// read and composited in its own coordinates; `None` when the brush
+    /// can't write it or the stroke changes nothing there.
+    fn written(
+        &self,
+        cx: &Context,
+        layer: LayerId,
+        rect: koharu_scene::Rect,
+        coverage: &[u8],
+    ) -> anyhow::Result<Option<Op>> {
+        let Some((offset, format)) = cx.snapshot.writable(layer) else {
+            return Ok(None);
+        };
+        let own = koharu_scene::Rect {
+            x: rect.x - offset.x,
+            y: rect.y - offset.y,
+            ..rect
+        };
+        let before = cx.session.lock().pixels(layer, own)?;
+        let mut pixels = before.clone();
+        match (self.tool, format) {
+            (Tool::Draw, PixelFormat::Rgba8) => {
+                let mut under = RgbaImage::from_raw(own.width, own.height, pixels)
+                    .ok_or_else(|| anyhow::anyhow!("a raster's pixels are RGBA"))?;
+                imageops::overlay(&mut under, &paint(rect, coverage, cx.brush.color), 0, 0);
+                pixels = under.into_raw();
+            }
+            (Tool::Draw, PixelFormat::Gray8) => {
+                uncovered(&mut pixels, coverage, cx.brush.color.0[3]);
+            }
+            (_, PixelFormat::Rgba8) => erased(&mut pixels, coverage, 4),
+            (_, PixelFormat::Gray8) => erased(&mut pixels, coverage, 1),
+        }
+        Ok((pixels != before).then(|| Op::WritePixels {
+            layer: Ref::from(layer),
+            rect: own,
+            pixels,
+        }))
     }
 }
 

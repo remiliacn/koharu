@@ -63,7 +63,10 @@ pub(super) fn outlined(
     )
     .to_image();
     let blocked = |x: u32, y: u32| {
-        let (x, y) = ((outer.x as u32 + x) as f32 + 0.5, (outer.y as u32 + y) as f32 + 0.5);
+        let (x, y) = (
+            (outer.x as u32 + x) as f32 + 0.5,
+            (outer.y as u32 + y) as f32 + 0.5,
+        );
         others.iter().any(|&[left, top, right, bottom]| {
             (left..=right).contains(&x) && (top..=bottom).contains(&y)
         })
@@ -132,7 +135,12 @@ fn growth(
     image: &RgbImage,
     labels: &ImageBuffer<Luma<u32>, Vec<u32>>,
     label: u32,
-    [component_left, component_top, component_right, component_bottom]: [u32; 4],
+    [
+        component_left,
+        component_top,
+        component_right,
+        component_bottom,
+    ]: [u32; 4],
     radius: u8,
     blocked: &(dyn Fn(u32, u32) -> bool + Sync),
 ) -> Option<(u32, u32, GrayImage)> {

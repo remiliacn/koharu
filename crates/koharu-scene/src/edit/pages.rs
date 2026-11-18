@@ -8,6 +8,7 @@ impl Run<'_, '_> {
         &mut self,
         op: usize,
         id: Option<&Ref>,
+        name: Option<&str>,
         index: usize,
         size: Option<Size>,
         background: Option<&Hash>,
@@ -45,6 +46,7 @@ impl Run<'_, '_> {
             id,
             Page {
                 id,
+                name: name.unwrap_or_default().to_owned(),
                 size,
                 background,
                 layers: Vec::new(),

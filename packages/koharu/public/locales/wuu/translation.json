@@ -28,6 +28,7 @@
     "model": "模型",
     "newChat": "新对话",
     "placeholder": "让 Koharu 帮侬处理箇个项目…",
+    "properties": "属性",
     "reasoning": "推理",
     "send": "发送",
     "thinking": "来勒忖…",
@@ -40,6 +41,7 @@
   },
   "canvas": {
     "empty": "先选一页，就好开始。",
+    "fit": "适应窗口",
     "notice": {
       "eraser_needs_raster": "先选一个栅格图层，再好擦。"
     }
@@ -172,6 +174,7 @@
     "borderColor": "描边颜色",
     "borderWidth": "描边宽度",
     "chooseFontSize": "选字体大小",
+    "color": "颜色",
     "decreaseBorderWidth": "拿描边调细点",
     "font": "字体",
     "fontSize": "字体大小",
@@ -254,6 +257,7 @@
     "help": "帮助",
     "history": "历史记录",
     "import": "导入页面",
+    "inpaintMask": "显示修补蒙版",
     "redo": "重做",
     "selectAllLayers": "图层侪选",
     "settings": "设置",
@@ -406,10 +410,17 @@
       "subscription": "订阅",
       "title": "提供商"
     },
+    "shortcuts": {
+      "description": "文本框呒没焦点个辰光，就好用单键快捷键。",
+      "inputLabel": "{{action}} 快捷键",
+      "title": "快捷键",
+      "tools": "工具"
+    },
     "tabs": {
       "appearance": "外观",
       "pipeline": "处理流程",
       "providers": "提供商",
+      "shortcuts": "快捷键",
       "typesetting": "渲染器"
     },
     "title": "设置",
@@ -456,12 +467,6 @@
   },
   "status": {
     "zoom": "缩放"
-  },
-  "story": {
-    "noText": "箇页浪呒没文字。",
-    "sfx": "音效",
-    "title": "故事",
-    "translate": "翻译 {{name}}"
   },
   "tools": {
     "brushSize": "笔刷大小",

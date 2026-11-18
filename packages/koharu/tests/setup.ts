@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, vi } from 'vitest'
 
 import { queryClient } from '@/lib/queries'
-import { useKoharuStore } from '@/lib/store'
+import { defaultShortcuts, useKoharuStore } from '@/lib/store'
 
 vi.mock('react-i18next', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-i18next')>()
@@ -77,7 +77,6 @@ beforeEach(() => {
     jobs: {},
     downloads: {},
     camera: { zoom: 1, x: 0, y: 0 },
-    selectionBounds: null,
     typing: null,
     picked: null,
     selectedLayers: [],
@@ -85,12 +84,13 @@ beforeEach(() => {
     selectedPages: [],
     tool: 'select',
     brush: { diameter: 48, color: '#FFFFFF' },
-    panel: 'layers',
-    storyHover: null,
+    masksShown: false,
+    eraserShowedMasks: false,
     processingScope: 'project',
     processingStages: ['detect', 'recognize', 'inpaint', 'translate'],
     settingsOpen: false,
     historyOpen: false,
+    shortcuts: defaultShortcuts,
   })
 })
 

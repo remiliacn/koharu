@@ -112,6 +112,17 @@ impl Snapshot {
         self.outlines.get(&id)
     }
 
+    /// The outline of the balloon `id` is in, on the page; `None` for a
+    /// layer outside any.
+    pub(crate) fn balloon(&self, id: LayerId) -> Option<&BezPath> {
+        let (_, parent) = self.project.parent(id).ok()?;
+        let parent = parent?;
+        match parent.content {
+            Content::Balloon(_) => self.outline(parent.id),
+            _ => None,
+        }
+    }
+
     /// Which part of a block `id` is, when it's a block's clean-up or mask,
     /// shown or not.
     pub(crate) fn part(&self, id: LayerId) -> Option<Part> {
@@ -139,6 +150,9 @@ impl Snapshot {
                     Content::Raster(raster) if layer.id == id => {
                         Some((raster.offset, PixelFormat::Rgba8))
                     }
+                    Content::Mask(mask) if layer.id == id => {
+                        Some((mask.offset, PixelFormat::Gray8))
+                    }
                     Content::Block(block)
                         if block.cleanup.id == id
                             && block.cleanup.visible
@@ -156,6 +170,70 @@ impl Snapshot {
         }
         find(&self.page.layers, id)
     }
+
+    /// What inpainting left on the page, each picture with the mask it shows
+    /// through: every block's clean-up, and every raster Remove or Generative
+    /// Fill added, which holds its mask as a child. The fork's page mask and
+    /// clean-up layer, which its toggle showed and its eraser cleared, are
+    /// these together.
+    pub(crate) fn fills(&self) -> Vec<Fill> {
+        fn walk(snapshot: &Snapshot, layers: &[Layer], out: &mut Vec<Fill>) {
+            for layer in layers {
+                let fill = match &layer.content {
+                    Content::Block(block) => {
+                        let source = snapshot
+                            .outline(block.mask.id)
+                            .map(|path| path.bounding_box());
+                        let drawn = snapshot
+                            .frame
+                            .layer(block.cleanup.id)
+                            .and_then(|drawn| drawn.bounds());
+                        Some(Fill {
+                            picture: block.cleanup.id,
+                            mask: Some((block.mask.id, block.mask.visible)),
+                            region: source.into_iter().chain(drawn).reduce(|a, b| a.union(b)),
+                        })
+                    }
+                    Content::Raster(_)
+                        if layer
+                            .attributes
+                            .get("c2pa")
+                            .is_some_and(|c2pa| c2pa.contains_key("inpainting")) =>
+                    {
+                        Some(Fill {
+                            picture: layer.id,
+                            mask: layer
+                                .children
+                                .iter()
+                                .find(|child| matches!(child.content, Content::Mask(_)))
+                                .map(|child| (child.id, child.visible)),
+                            region: snapshot
+                                .frame
+                                .layer(layer.id)
+                                .and_then(|drawn| drawn.bounds()),
+                        })
+                    }
+                    _ => None,
+                };
+                out.extend(fill);
+                walk(snapshot, &layer.children, out);
+            }
+        }
+        let mut fills = Vec::new();
+        walk(self, &self.page.layers, &mut fills);
+        fills
+    }
+}
+
+/// A picture inpainting made, and the mask it shows through.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Fill {
+    pub picture: LayerId,
+    /// The mask, and whether it's shown.
+    pub mask: Option<(LayerId, bool)>,
+    /// Where on the page a painted mask stroke reaches it: a block's source
+    /// frame and clean-up, or a fill's pixels.
+    pub region: Option<Rect>,
 }
 
 /// A block's own picture layer.

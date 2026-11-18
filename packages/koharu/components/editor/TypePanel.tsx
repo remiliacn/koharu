@@ -1,21 +1,19 @@
 'use client'
 
+import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Italic, Minus, Plus } from 'lucide-react'
 import {
-  AlignCenter,
-  AlignLeft,
-  AlignRight,
-  ChevronDown,
-  Italic,
-  Minus,
-  Plus,
-  SquareSlash,
-} from 'lucide-react'
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+  type ComponentProps,
+  type ReactNode,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ColorWell } from '@/components/controls/ColorWell'
 import { FontPicker } from '@/components/controls/FontPicker'
-import { ContextBar } from '@/components/editor/ContextBar'
 import { call, dispatch } from '@/lib/backend'
 import {
   expandLayerSelection,
@@ -26,7 +24,7 @@ import {
 } from '@/lib/document'
 import { useFonts, usePage } from '@/lib/queries'
 import { setStyle, updateLayer } from '@/lib/scene'
-import { hexToRgba, rgbaToHex, useKoharuStore, type CanvasTool } from '@/lib/store'
+import { hexToRgba, rgbaToHex, useKoharuStore } from '@/lib/store'
 import {
   commands,
   type Align,
@@ -53,7 +51,6 @@ import {
   NumberFieldIncrement,
   NumberFieldInput,
 } from '@koharu/ui/components/number-field'
-import { Popover, PopoverContent, PopoverTrigger } from '@koharu/ui/components/popover'
 import {
   Select,
   SelectContent,
@@ -62,26 +59,19 @@ import {
   SelectValue,
 } from '@koharu/ui/components/select'
 import { Toggle } from '@koharu/ui/components/toggle'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@koharu/ui/components/tooltip'
 
 /** The renderer's own default when `[renderer]` names no font. */
 const FALLBACK_FONT = 'CCWildWords'
 const BLACK = '#000000'
 const WHITE = '#FFFFFF'
 
-/** The tools whose selection the bar follows; a brush's settings are on the tool rail. */
-const TOOLS: CanvasTool[] = ['select', 'direct_select', 'text']
-
-/** The selected texts' type settings in a bar beside them on the canvas, as Photoshop's Contextual
- * Task Bar shows a selection's type settings on the canvas: centred below the texts, or above when
- * there's no room below, kept inside the canvas, on one row or two when the canvas is narrower.
- * Every setting a text's lettering has: the style it draws with, its direction, and its box's
- * fit. As Photoshop's Character panel, while the canvas types, a character setting styles the
- * selected characters, or the next ones typed at a caret; otherwise every character of every text
- * and block selected. A value the characters don't share shows empty. */
-export function TypeBar() {
+/** The selected texts' type settings in the Properties panel, as Photoshop's Character panel
+ * shows them: every setting a text's lettering has, the style it draws with, its direction, and its
+ * box's fit, disabled while no text is selected. While the canvas types, a character setting
+ * styles the selected characters, or the next ones typed at a caret; otherwise every character of
+ * every text and block selected. A value the characters don't share shows empty. */
+export function TypePanel() {
   const { t } = useTranslation()
-  const tool = useKoharuStore((state) => state.tool)
   const borderWidthId = useId()
   const page = usePage().data
   const selectedIds = useKoharuStore((state) => state.selectedLayers)
@@ -173,242 +163,218 @@ export function TypeBar() {
   const direction: Direction = lettering?.direction ?? 'horizontal'
   const align: Align = style.align ?? (direction === 'vertical' ? 'start' : 'center')
 
-  // The bar sits by the selection as the canvas lays it out, a point text's lines and the text
-  // being typed included.
-  const selectionBounds = useKoharuStore((state) => state.selectionBounds)
   // A new text being typed has no layer yet for its paragraph to go to.
   const paragraph = targets.length > 0
-  if (!selectionBounds || !(targets.length || typing) || !TOOLS.includes(tool)) return null
+  const disabled = !(targets.length || typing)
 
-  // One row, as Photoshop's type options bar, at the user's choice: the face, its size, and its
-  // colour, then the paragraph; italic and vertical text are toggles, and the border sits behind
-  // one button, as Photoshop keeps a stroke out of the bar.
   const toggle =
-    'h-6 w-6 min-w-6 rounded-md bg-background px-0 text-muted-foreground data-[pressed]:border-primary data-[pressed]:bg-primary data-[pressed]:text-primary-foreground data-[pressed]:hover:bg-primary/90'
+    'h-6 w-full min-w-6 rounded-md bg-background px-0 text-muted-foreground data-[pressed]:border-primary data-[pressed]:bg-primary data-[pressed]:text-primary-foreground data-[pressed]:hover:bg-primary/90'
   return (
-    <ContextBar
-      bounds={selectionBounds}
-      aria-label={t('inspector.type')}
-      data-testid='type-bar'
-      className='flex-wrap'
-    >
-      <div className='w-28'>
-        <FontPicker
-          value={family}
-          families={families}
-          size='sm'
-          onChange={(next) => {
-            const nextFamily = families.find((candidate) => sameFont(candidate.name, next))
-            const nextItalic = italic && hasItalic(nextFamily)
-            applyChars({
-              family: next,
-              italic: nextItalic,
-              weight: nearestFontWeight(usableFontWeights(nextFamily, nextItalic), weight),
-            })
-          }}
-        />
+    <div className='grid min-w-0 gap-1.5 p-2' data-testid='type-panel' aria-disabled={disabled}>
+      <div className='grid min-w-0 grid-cols-[minmax(0,1fr)_2.5rem] gap-1.5'>
+        <TypeField label={t('inspector.font')}>
+          <FontPicker
+            value={family}
+            families={families}
+            disabled={disabled}
+            size='sm'
+            onChange={(next) => {
+              const nextFamily = families.find((candidate) => sameFont(candidate.name, next))
+              const nextItalic = italic && hasItalic(nextFamily)
+              applyChars({
+                family: next,
+                italic: nextItalic,
+                weight: nearestFontWeight(usableFontWeights(nextFamily, nextItalic), weight),
+              })
+            }}
+          />
+        </TypeField>
+        <TypeField label={t('inspector.color')}>
+          <ColorWell
+            label={t('inspector.textColor')}
+            size='sm'
+            disabled={disabled}
+            value={mixed.has('fill') ? '' : chars.fill ? rgbaToHex(chars.fill) : BLACK}
+            onChange={(color) => color && applyChars({ fill: hexToRgba(color) })}
+          />
+        </TypeField>
       </div>
-      <Select
-        value={mixed.has('weight') ? '' : String(weight)}
-        onValueChange={(next) => next && applyChars({ weight: Number(next) })}
-      >
-        <SelectTrigger size='sm' aria-label={t('inspector.fontWeight')} className='w-16'>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {weights.map((value) => (
-            <SelectItem key={value} value={String(value)}>
-              {value}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Toggle
-              variant='outline'
-              size='sm'
-              aria-label={t('inspector.fontStyles.italic')}
-              className={toggle}
-              disabled={!italics && !italic}
-              pressed={italic}
-              onPressedChange={(nextItalic) =>
-                applyChars({
-                  italic: nextItalic,
-                  weight: nearestFontWeight(usableFontWeights(selectedFamily, nextItalic), weight),
-                })
-              }
-            />
-          }
-        >
-          <Italic className='size-3.5' />
-        </TooltipTrigger>
-        <TooltipContent>{t('inspector.fontStyles.italic')}</TooltipContent>
-      </Tooltip>
-      <div className='w-[4.5rem]'>
-        <FontSizeField
-          disabled={false}
-          value={size}
-          autoFit={autoFit}
-          canAutoFit={fitted !== null}
-          onChange={(next) => {
-            applyChars({ size: next })
-            // A set size is the most the text takes, as the frame's best fit would grow it.
-            if (autoFit && fitted) update({ frame: { [fitted]: { fit: 'shrink' } } })
-          }}
-          onAutoFit={() => fitted && update({ frame: { [fitted]: { fit: 'best' } } })}
-        />
-      </div>
-      <ColorWell
-        label={t('inspector.textColor')}
-        size='sm'
-        value={mixed.has('fill') ? '' : chars.fill ? rgbaToHex(chars.fill) : BLACK}
-        onChange={(color) => color && applyChars({ fill: hexToRgba(color) })}
-      />
-      <div
-        role='group'
-        aria-label={t('inspector.alignment')}
-        className='grid h-6 w-[4.5rem] grid-cols-3 rounded-md border border-input bg-background p-px'
-      >
-        {(
-          [
-            [
-              'start',
-              AlignLeft,
-              direction === 'vertical' ? t('inspector.alignTop') : t('inspector.alignLeft'),
-            ],
-            [
-              'center',
-              AlignCenter,
-              direction === 'vertical' ? t('inspector.alignMiddle') : t('inspector.alignCenter'),
-            ],
-            [
-              'end',
-              AlignRight,
-              direction === 'vertical' ? t('inspector.alignBottom') : t('inspector.alignRight'),
-            ],
-          ] as const
-        ).map(([value, Icon, label]) => (
-          <button
-            key={value}
-            type='button'
-            aria-label={label}
-            aria-pressed={align === value}
-            data-active={align === value}
-            disabled={!paragraph}
-            className='grid place-items-center rounded-[4px] text-muted-foreground hover:text-foreground data-[active=true]:bg-primary data-[active=true]:text-primary-foreground data-[active=true]:hover:bg-primary/90'
-            onClick={() => apply({ align: value })}
+
+      <div className='grid min-w-0 grid-cols-[minmax(0,1fr)_4.25rem_2.5rem] gap-1.5'>
+        <TypeField label={t('inspector.fontSize')}>
+          <FontSizeField
+            // A size typed but not applied belongs to the text it was typed for.
+            key={current?.id ?? ''}
+            disabled={disabled}
+            value={size}
+            autoFit={autoFit}
+            canAutoFit={fitted !== null}
+            onChange={(next) => {
+              applyChars({ size: next })
+              // A set size is the most the text takes, as the frame's best fit would grow it.
+              if (autoFit && fitted) update({ frame: { [fitted]: { fit: 'shrink' } } })
+            }}
+            onAutoFit={() => fitted && update({ frame: { [fitted]: { fit: 'best' } } })}
+          />
+        </TypeField>
+        <TypeField label={t('inspector.fontWeight')}>
+          <Select
+            disabled={disabled}
+            value={mixed.has('weight') ? '' : String(weight)}
+            onValueChange={(next) => next && applyChars({ weight: Number(next) })}
           >
-            <Icon className='size-3' />
-          </button>
-        ))}
-      </div>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Toggle
-              variant='outline'
+            <SelectTrigger
               size='sm'
-              aria-label={t('inspector.vertical')}
-              className={toggle}
-              disabled={!paragraph}
-              pressed={direction === 'vertical'}
-              onPressedChange={(vertical) =>
-                update({ direction: vertical ? 'vertical' : 'horizontal' })
-              }
-            />
-          }
-        >
-          {/* Columns of text read from the right, as vertical text sets. */}
-          <svg
-            aria-hidden='true'
-            viewBox='0 0 24 24'
-            fill='none'
-            stroke='currentColor'
-            strokeWidth={2}
-            strokeLinecap='round'
-            className='size-3.5'
-          >
-            <path d='M18 4v16M12 4v11M6 4v7' />
-          </svg>
-        </TooltipTrigger>
-        <TooltipContent>
-          {t('inspector.textDirection')}
-          <span className='ml-2 opacity-60'>{t(`inspector.${direction}`)}</span>
-        </TooltipContent>
-      </Tooltip>
-      <Popover>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <PopoverTrigger
-                aria-label={t('inspector.border')}
-                className='grid size-6 shrink-0 place-items-center rounded-md border border-input bg-background text-muted-foreground hover:bg-muted'
-              />
+              aria-label={t('inspector.fontWeight')}
+              className='w-full min-w-0'
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {weights.map((value) => (
+                <SelectItem key={value} value={String(value)}>
+                  {value}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </TypeField>
+        <TypeField label={t('inspector.fontStyles.italic')}>
+          <Toggle
+            variant='outline'
+            size='sm'
+            aria-label={t('inspector.fontStyles.italic')}
+            className={toggle}
+            disabled={disabled || (!italics && !italic)}
+            pressed={italic}
+            onPressedChange={(nextItalic) =>
+              applyChars({
+                italic: nextItalic,
+                weight: nearestFontWeight(usableFontWeights(selectedFamily, nextItalic), weight),
+              })
             }
           >
-            {strokeEnabled && stroke ? (
-              <span
-                aria-hidden='true'
-                className='size-3 rounded-[3px] border-2'
-                style={{ borderColor: rgbaToHex(stroke) }}
-              />
-            ) : (
-              <SquareSlash aria-hidden='true' className='size-3.5' />
-            )}
-          </TooltipTrigger>
-          <TooltipContent>{t('inspector.border')}</TooltipContent>
-        </Tooltip>
-        <PopoverContent side='bottom' align='end' className='w-auto gap-1.5 rounded-xl p-2'>
-          <span className='text-[10px] font-medium text-muted-foreground'>
-            {t('inspector.border')}
-          </span>
-          <div className='flex items-center gap-1'>
-            <ColorWell
-              label={t('inspector.borderColor')}
-              size='sm'
-              allowTransparent
-              value={strokeEnabled && stroke ? rgbaToHex(stroke) : null}
-              onChange={(color) =>
-                applyChars(
-                  color === null
-                    ? { stroke: null }
-                    : {
-                        stroke: hexToRgba(color),
-                        stroke_width: strokeWidth > 0 ? strokeWidth : 1.5,
-                      },
-                )
-              }
-            />
-            <NumberField
-              id={borderWidthId}
-              name='border-width'
-              className='w-24'
-              value={strokeWidth > 0 ? strokeWidth : 1.5}
-              min={0.5}
-              max={32}
-              step={0.5}
-              onValueChange={(next) => {
-                if (next !== null && next >= 0.5 && next <= 32) {
-                  applyChars({ stroke_width: next, stroke: stroke ?? hexToRgba(WHITE) })
-                }
-              }}
-            >
-              <NumberFieldGroup>
-                <NumberFieldDecrement aria-label={t('inspector.decreaseBorderWidth')}>
-                  <Minus />
-                </NumberFieldDecrement>
-                <NumberFieldInput aria-label={t('inspector.borderWidth')} />
-                <NumberFieldIncrement aria-label={t('inspector.increaseBorderWidth')}>
-                  <Plus />
-                </NumberFieldIncrement>
-              </NumberFieldGroup>
-            </NumberField>
+            <Italic className='size-3.5' />
+          </Toggle>
+        </TypeField>
+      </div>
+
+      <div className='grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(6.5rem,1fr)] gap-1.5'>
+        <TypeField label={t('inspector.alignment')}>
+          <div className='grid h-6 grid-cols-3 rounded-md border border-input bg-background p-px'>
+            {(
+              [
+                [
+                  'start',
+                  AlignLeft,
+                  direction === 'vertical' ? t('inspector.alignTop') : t('inspector.alignLeft'),
+                ],
+                [
+                  'center',
+                  AlignCenter,
+                  direction === 'vertical'
+                    ? t('inspector.alignMiddle')
+                    : t('inspector.alignCenter'),
+                ],
+                [
+                  'end',
+                  AlignRight,
+                  direction === 'vertical' ? t('inspector.alignBottom') : t('inspector.alignRight'),
+                ],
+              ] as const
+            ).map(([value, Icon, label]) => (
+              <button
+                key={value}
+                type='button'
+                aria-label={label}
+                aria-pressed={align === value}
+                data-active={align === value}
+                disabled={!paragraph}
+                className='grid place-items-center rounded-[4px] text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 data-[active=true]:bg-primary data-[active=true]:text-primary-foreground data-[active=true]:hover:bg-primary/90'
+                onClick={() => apply({ align: value })}
+              >
+                <Icon className='size-3' />
+              </button>
+            ))}
           </div>
-        </PopoverContent>
-      </Popover>
-    </ContextBar>
+        </TypeField>
+        <TypeField label={t('inspector.textDirection')}>
+          <Select
+            disabled={!paragraph}
+            value={direction}
+            onValueChange={(next) => next && update({ direction: next })}
+          >
+            <SelectTrigger size='sm' aria-label={t('inspector.textDirection')} className='w-full'>
+              <SelectValue>{t(`inspector.${direction}`)}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='horizontal'>{t('inspector.horizontal')}</SelectItem>
+              <SelectItem value='vertical'>{t('inspector.vertical')}</SelectItem>
+            </SelectContent>
+          </Select>
+        </TypeField>
+      </div>
+
+      <div className='grid min-w-0 grid-cols-[2.5rem_minmax(5.5rem,1fr)] items-end gap-1.5'>
+        <TypeField label={t('inspector.border')}>
+          <ColorWell
+            label={t('inspector.borderColor')}
+            size='sm'
+            disabled={disabled}
+            allowTransparent
+            value={strokeEnabled && stroke ? rgbaToHex(stroke) : null}
+            onChange={(color) =>
+              applyChars(
+                color === null
+                  ? { stroke: null }
+                  : {
+                      stroke: hexToRgba(color),
+                      stroke_width: strokeWidth > 0 ? strokeWidth : 1.5,
+                    },
+              )
+            }
+          />
+        </TypeField>
+        <TypeField label={t('inspector.borderWidth')}>
+          <NumberField
+            id={borderWidthId}
+            name='border-width'
+            className='min-w-0'
+            disabled={disabled}
+            value={strokeWidth > 0 ? strokeWidth : 1.5}
+            min={0.5}
+            max={32}
+            step={0.5}
+            onValueChange={(next) => {
+              if (next !== null && next >= 0.5 && next <= 32) {
+                applyChars({ stroke_width: next, stroke: stroke ?? hexToRgba(WHITE) })
+              }
+            }}
+          >
+            <NumberFieldGroup>
+              <NumberFieldDecrement aria-label={t('inspector.decreaseBorderWidth')}>
+                <Minus />
+              </NumberFieldDecrement>
+              <NumberFieldInput aria-label={t('inspector.borderWidth')} />
+              <NumberFieldIncrement aria-label={t('inspector.increaseBorderWidth')}>
+                <Plus />
+              </NumberFieldIncrement>
+            </NumberFieldGroup>
+          </NumberField>
+        </TypeField>
+      </div>
+    </div>
+  )
+}
+
+function TypeField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className='grid min-w-0 gap-0.5'>
+      <span className='truncate text-[8px] font-medium tracking-[0.06em] text-muted-foreground uppercase'>
+        {label}
+      </span>
+      {children}
+    </div>
   )
 }
 
@@ -508,10 +474,33 @@ function FontSizeField({
   const { t } = useTranslation()
   const id = useId()
   const [draft, setDraft] = useState<number | null>(value)
+  const pressed = useRef<number | null>(null)
 
   useEffect(() => {
     setDraft(autoFit ? null : value)
   }, [autoFit, value])
+
+  // The stepper buttons walk the preset scale instead of the fixed step, so their changes are
+  // vetoed and the preset is tracked here until the press is released and committed once.
+  const change: NonNullable<ComponentProps<typeof NumberField>['onValueChange']> = (
+    next,
+    details,
+  ) => {
+    if (details.reason !== 'increment-press' && details.reason !== 'decrement-press') {
+      setDraft(next)
+      return
+    }
+    details.cancel()
+    const current = pressed.current ?? draft ?? value ?? 24
+    const preset =
+      details.reason === 'increment-press'
+        ? fontSizePresets.find((size) => size > current)
+        : fontSizePresets.findLast((size) => size < current)
+    if (preset !== undefined) {
+      pressed.current = preset
+      setDraft(preset)
+    }
+  }
 
   const select = (choice: string) => {
     if (choice === 'auto') {
@@ -526,7 +515,16 @@ function FontSizeField({
     }
   }
 
-  const commit = (next: number | null) => {
+  const commit: NonNullable<ComponentProps<typeof NumberField>['onValueCommitted']> = (
+    next,
+    details,
+  ) => {
+    if (details.reason === 'increment-press' || details.reason === 'decrement-press') {
+      const preset = pressed.current
+      pressed.current = null
+      if (preset !== null) onChange(preset)
+      return
+    }
     if (next !== null && next > 0 && next <= 300) {
       onChange(next)
     } else {
@@ -544,16 +542,24 @@ function FontSizeField({
       min={0.5}
       max={300}
       step={0.5}
-      onValueChange={setDraft}
+      onValueChange={change}
       onValueCommitted={commit}
     >
       <NumberFieldGroup>
+        <NumberFieldDecrement aria-label={t('inspector.decreaseFontSize')}>
+          <Minus />
+        </NumberFieldDecrement>
         <NumberFieldInput
           data-testid='type-size'
           aria-label={t('inspector.fontSize')}
+          // Enter applies the size, as in Photoshop's Character panel.
+          onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
           placeholder={autoFit ? t('inspector.auto') : undefined}
-          className='px-1.5 text-left text-ellipsis'
+          className='px-1.5 text-center text-ellipsis'
         />
+        <NumberFieldIncrement aria-label={t('inspector.increaseFontSize')}>
+          <Plus />
+        </NumberFieldIncrement>
         <DropdownMenu>
           <DropdownMenuTrigger
             disabled={disabled}

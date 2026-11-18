@@ -13,7 +13,6 @@ import {
   commands,
   type FontFamily,
   type History,
-  type LayerId,
   type Page,
   type PageId,
   type PageSummary,
@@ -24,8 +23,6 @@ import { call } from './backend'
 
 export const projectKey = ['project'] as const
 export const pageKey = ['page'] as const
-/** Each page Story lists, by its id, whether or not the canvas shows it. */
-export const pagesKey = ['pages'] as const
 export const projectsKey = ['projects'] as const
 export const fontsKey = ['fonts'] as const
 
@@ -100,21 +97,6 @@ export function usePages(enabled = true) {
 /** The page the editor shows, with its layers. */
 export function usePage(enabled = true) {
   return useQuery({ ...pageQuery, enabled })
-}
-
-/** A page with its layers, and its texts in the scene's reading order, as Story lists them. */
-export function usePageStory(page: PageId, enabled = true) {
-  return useQuery({
-    queryKey: [...pagesKey, page],
-    queryFn: async () => {
-      const [layers, story] = await Promise.all([
-        call(commands.query, { query: 'get_page', page }),
-        call(commands.query, { query: 'get_story', page }),
-      ])
-      return { page: layers as Page, story: story as LayerId[] }
-    },
-    enabled,
-  })
 }
 
 export function useFonts(enabled = true) {

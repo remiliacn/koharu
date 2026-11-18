@@ -28,6 +28,7 @@
     "model": "Model",
     "newChat": "New chat",
     "placeholder": "Ask Koharu to work on this project...",
+    "properties": "Properties",
     "reasoning": "Reasoning",
     "send": "Send",
     "thinking": "Thinking...",
@@ -40,6 +41,7 @@
   },
   "canvas": {
     "empty": "Select a page to begin.",
+    "fit": "Fit Window",
     "notice": {
       "eraser_needs_raster": "Select a raster layer to erase."
     }
@@ -173,7 +175,9 @@
     "borderColor": "Border color",
     "borderWidth": "Border width",
     "chooseFontSize": "Choose font size",
+    "color": "Color",
     "decreaseBorderWidth": "Decrease border width",
+    "decreaseFontSize": "Decrease font size",
     "font": "Font",
     "fontSize": "Font size",
     "fontStyles": {
@@ -183,6 +187,7 @@
     "fontWeight": "Font weight",
     "horizontal": "Horizontal",
     "increaseBorderWidth": "Increase border width",
+    "increaseFontSize": "Increase font size",
     "opacity": "Opacity",
     "selectPage": "Select a page to inspect its layers.",
     "source": "Source text",
@@ -255,6 +260,7 @@
     "help": "Help",
     "history": "History",
     "import": "Import Pages",
+    "inpaintMask": "Show Inpainting Mask",
     "redo": "Redo",
     "selectAllLayers": "Select All Layers",
     "settings": "Settings",
@@ -279,6 +285,8 @@
     "actionsFor": "Actions for {{page}}",
     "delete": "Delete",
     "deleteDescription": "This deletes “{{page}}” and its layers. You can undo it.",
+    "deletePagesDescription": "This deletes {{count}} pages and their layers. You can undo it.",
+    "deletePagesTitle": "Delete {{count}} pages?",
     "deleteTitle": "Delete page?",
     "emptyDescription": "Import image files or a folder to add pages.",
     "emptyTitle": "No pages yet",
@@ -377,6 +385,9 @@
       "thresholds": "Thresholds",
       "title": "Pipeline",
       "translator": {
+        "clearFallback": "Clear the fallback model",
+        "fallback": "Fallback model",
+        "fallbackDescription": "Asked for a page when the model fails it, such as on a rate limit, an empty balance, or a refusal, with the same instructions, reasoning, and history.",
         "instructions": "Additional instructions",
         "instructionsDescription": "Optional, in any language and form, such as a name's spelling or the tone. Koharu adds them, as written, after its own system prompt.",
         "reasoning": "Reasoning",
@@ -407,10 +418,17 @@
       "subscription": "Subscription",
       "title": "Providers"
     },
+    "shortcuts": {
+      "description": "Single-key shortcuts are available whenever a text field is not focused.",
+      "inputLabel": "{{action}} shortcut",
+      "title": "Shortcuts",
+      "tools": "Tools"
+    },
     "tabs": {
       "appearance": "Appearance",
       "pipeline": "Pipeline",
       "providers": "Providers",
+      "shortcuts": "Shortcuts",
       "typesetting": "Renderer"
     },
     "title": "Settings",
@@ -457,12 +475,6 @@
   },
   "status": {
     "zoom": "Zoom"
-  },
-  "story": {
-    "noText": "No text on this page.",
-    "sfx": "Sound effect",
-    "title": "Story",
-    "translate": "Translate {{name}}"
   },
   "tools": {
     "brushSize": "Brush size",

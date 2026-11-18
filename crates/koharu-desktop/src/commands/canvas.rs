@@ -9,12 +9,15 @@ use tauri::State;
 
 use crate::app::App;
 
-/// The canvas element's rectangle, in CSS pixels from the window's corner.
+/// The canvas element's rectangle, in CSS pixels from the window's corner,
+/// and the page's `devicePixelRatio`, physical pixels to a CSS pixel.
 #[tauri::command]
 #[specta::specta]
-pub fn set_viewport(app: State<'_, Arc<App>>, x: f64, y: f64, width: f64, height: f64) {
-    app.screen
-        .set_viewport(Rect::new(x, y, x + width.max(0.0), y + height.max(0.0)));
+pub fn set_viewport(app: State<'_, Arc<App>>, x: f64, y: f64, width: f64, height: f64, scale: f64) {
+    app.screen.set_viewport(
+        Rect::new(x, y, x + width.max(0.0), y + height.max(0.0)),
+        scale,
+    );
 }
 
 #[tauri::command]
@@ -42,6 +45,13 @@ pub fn set_colors(app: State<'_, Arc<App>>, colors: Colors) {
 #[specta::specta]
 pub fn set_story(app: State<'_, Arc<App>>, story: Story) {
     app.screen.set_story(story);
+}
+
+/// Shows or hides the page's inpainting masks, as the mask toggle does.
+#[tauri::command]
+#[specta::specta]
+pub fn set_masks(app: State<'_, Arc<App>>, shown: bool) {
+    app.screen.set_masks(shown);
 }
 
 /// Fits the page in the canvas, as the fit shortcut does.

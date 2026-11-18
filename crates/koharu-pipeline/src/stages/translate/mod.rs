@@ -41,6 +41,10 @@ use crate::{PipelineConfig, Stage};
 pub struct TranslatorConfig {
     /// A `vendor/model` reference, as koharu-llm connects one.
     pub model: String,
+    /// The model a page is asked of when `model` fails it, such as on a rate
+    /// limit, an empty balance, or a refusal, with the same prompt,
+    /// reasoning, and history; none when empty. A fork addition.
+    pub fallback: String,
     /// A language CLDR names in English.
     #[serde(deserialize_with = "target")]
     #[specta(type = String)]
@@ -69,6 +73,7 @@ impl Default for TranslatorConfig {
             // missed, such as Shale for シャーレ where 2B wrote "tray", at
             // about twice the decoding time.
             model: "koharu/index-translate-9b".to_owned(),
+            fallback: String::new(),
             target: langid!("en"),
             instructions: String::new(),
             vision: false,
@@ -131,37 +136,37 @@ pub(crate) async fn translate(
     };
     let conversation = &mut *conversation;
     conversation.keep(&translator);
-    let model = match key(Stage::Translate, config) {
-        // A local model loads on the GPU thread, which only hands it over:
-        // its engine runs on a thread of its own, so the turn waits off the
-        // GPU thread, and the other stages' models run meanwhile.
-        Some(key) => {
-            let (reference, images) = (translator.model.clone(), translator.vision);
-            task.inference(&[member], move |models| {
-                let model = models.get(&key, |_| model::load(&reference, images))?;
-                Ok(DynModel::clone(model))
-            })
-            .await?
-        }
-        None => {
-            task.started(&[member]);
-            conversation.hosted(&translator).await?
-        }
-    };
     let system = system(&translator)?;
-    let turn = Turn::new(
-        system,
-        &page.texts,
-        page.image.as_deref(),
-        translator.reasoning,
-        &member.cancel,
-    );
-    let Some(translations) = turn
-        .take(conversation, &model)
-        .instrument(info_span!("llm", texts = page.texts.len()))
-        .await?
-    else {
-        return Err(Stopped.into());
+    let primary = translator.model.clone();
+    let fallback = translator.fallback.trim().to_owned();
+    let (translations, used) =
+        match asked(task, config, member, conversation, &page, &system, &primary).await {
+            Err(error) if !error.is::<Stopped>() && !fallback.is_empty() && fallback != primary => {
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    %fallback,
+                    "the translator failed the page; asking its fallback"
+                );
+                let translations = asked(
+                    task,
+                    config,
+                    member,
+                    conversation,
+                    &page,
+                    &system,
+                    &fallback,
+                )
+                .await
+                .with_context(|| {
+                    format!("{primary} failed ({error:#}), and so did its fallback")
+                })?;
+                (translations, fallback)
+            }
+            result => (result?, primary),
+        };
+    let translator = TranslatorConfig {
+        model: used,
+        ..translator
     };
     let translated: Vec<(LayerId, LanguageIdentifier, String)> = page
         .blocks
@@ -174,6 +179,54 @@ pub(crate) async fn translate(
             written(project, translated, &translator)
         })
         .await
+}
+
+/// The page's translations from `reference`, a `vendor/model`, after the
+/// conversation so far, with the translator's other settings.
+async fn asked(
+    task: &Task,
+    config: &PipelineConfig,
+    member: &Member,
+    conversation: &mut Conversation,
+    page: &Page,
+    system: &str,
+    reference: &str,
+) -> Result<Vec<String>> {
+    let mut chosen = config.clone();
+    chosen.translator.model = reference.to_owned();
+    let vision = config.translator.vision;
+    let model = match key(Stage::Translate, &chosen) {
+        // A local model loads on the GPU thread, which only hands it over:
+        // its engine runs on a thread of its own, so the turn waits off the
+        // GPU thread, and the other stages' models run meanwhile.
+        Some(key) => {
+            let reference = reference.to_owned();
+            task.inference(&[member], move |models| {
+                let model = models.get(&key, |_| model::load(&reference, vision))?;
+                Ok(DynModel::clone(model))
+            })
+            .await?
+        }
+        None => {
+            task.started(&[member]);
+            conversation.hosted(reference, vision).await?
+        }
+    };
+    let turn = Turn::new(
+        system.to_owned(),
+        &page.texts,
+        page.image.as_deref(),
+        config.translator.reasoning,
+        &member.cancel,
+    );
+    turn.take(conversation, &model)
+        .instrument(info_span!(
+            "llm",
+            model = reference,
+            texts = page.texts.len()
+        ))
+        .await?
+        .ok_or_else(|| Stopped.into())
 }
 
 /// The page's texts the task works on, and the page itself when the model

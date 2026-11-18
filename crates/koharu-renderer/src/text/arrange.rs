@@ -299,11 +299,15 @@ fn position(
                     let x = ink.map_or(-block_center + x_offset, |ink| {
                         -block_center - ((ink.x0 + ink.x1) * 0.5) as f32
                     });
+                    // The glyph's em box centred in its cell, as a
+                    // tate-chu-yoko cell sets its group: a font's own
+                    // vertical origin can sit far off its em box, as one
+                    // CJK handwriting face's set every column most of an em
+                    // low, past its box's end, where the cell is what fits.
+                    let cell = glyph.advance * scale;
                     let y = match ink {
-                        Some(ink) if middle => {
-                            pen + glyph.advance * scale * 0.5 + ((ink.y0 + ink.y1) * 0.5) as f32
-                        }
-                        _ => pen - y_offset,
+                        Some(ink) if middle => pen + cell * 0.5 + ((ink.y0 + ink.y1) * 0.5) as f32,
+                        _ => pen + (cell - (ascent + descent)) * 0.5 + ascent,
                     };
                     push(x, y, glyph);
                 }

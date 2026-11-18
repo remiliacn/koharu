@@ -20,6 +20,7 @@ import {
   EyeOff,
   Folder,
   Image as ImageIcon,
+  Layers3,
   Lock,
   LockOpen,
   MessageCircle,
@@ -32,6 +33,7 @@ import {
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { CommitTextarea } from '@/components/controls/CommitTextarea'
 import { call, dispatch } from '@/lib/backend'
 import {
   dropMoves,
@@ -47,7 +49,15 @@ import {
   type Placed,
 } from '@/lib/document'
 import { usePage } from '@/lib/queries'
-import { deleteLayers, moveLayers, setLocked, setPartVisibility, setVisibility } from '@/lib/scene'
+import {
+  deleteLayers,
+  moveLayers,
+  setLocked,
+  setPartVisibility,
+  setSourceText,
+  setText,
+  setVisibility,
+} from '@/lib/scene'
 import { useKoharuStore } from '@/lib/store'
 import { type Layer, type LayerId } from '@koharu/ipc/protocol'
 import { Button } from '@koharu/ui/components/button'
@@ -71,7 +81,7 @@ function displayedLayers(layers: Layer[], depth = 0): { placed: Placed; depth: n
 }
 
 /** The shown page's layers in reading order, each a row to select, show, lock, fade, or delete,
- * a block's with its clean-up and mask. */
+ * a block's with its clean-up and mask, and a selected text's or block's words to edit. */
 export function LayersPanel() {
   const { t } = useTranslation()
   const page = usePage().data
@@ -188,6 +198,11 @@ export function LayersPanel() {
 
   return (
     <div className='flex min-h-0 flex-1 flex-col'>
+      <header className='flex h-8 shrink-0 items-center gap-1.5 border-b border-border/80 px-2'>
+        <Layers3 className='size-3 text-primary' />
+        <h2 className='text-[10px] font-semibold'>{t('layers.title')}</h2>
+        <span className='text-[9px] text-muted-foreground tabular-nums'>{rows.length}</span>
+      </header>
       <DndContext
         sensors={sensors}
         collisionDetection={pointerWithin}
@@ -289,8 +304,20 @@ function LayerRow({
   const block = isBlockLayer(layer) ? layer : null
   const handle = useDraggable({ id: layer.id, disabled: !movable })
   const target = useDroppable({ id: layer.id })
+  const row = useRef<HTMLDivElement>(null)
+  const shown = selected || picked !== undefined
+
+  // A layer selected on the canvas scrolls into view, as Photoshop's Layers panel follows it.
+  useEffect(() => {
+    if (shown) row.current?.scrollIntoView({ block: 'nearest' })
+  }, [shown, expanded])
+
   return (
-    <div className='group min-w-0 px-1 py-px' style={{ paddingLeft: `${depth * 10 + 4}px` }}>
+    <div
+      ref={row}
+      className='group min-w-0 px-1 py-px'
+      style={{ paddingLeft: `${depth * 10 + 4}px` }}
+    >
       <div
         data-selected={selected || picked !== undefined}
         data-expanded={expanded}
@@ -394,6 +421,8 @@ function LayerEditor({ layer, onDelete }: { layer: Layer; onDelete?: () => void 
     void call(setVisibility, [layer.id], null, next / 100).catch(() =>
       setOpacity(layer.opacity * 100),
     )
+  const field =
+    'max-h-16 min-h-8 w-full max-w-full min-w-0 resize-y overflow-y-auto rounded-md bg-background px-1.5 py-1 text-[12px] leading-4 md:text-[12px]'
 
   return (
     <div className='grid min-w-0 gap-1.5 px-1.5 pt-0.5 pb-1.5'>
@@ -437,6 +466,53 @@ function LayerEditor({ layer, onDelete }: { layer: Layer; onDelete?: () => void 
           </Tooltip>
         )}
       </div>
+      {isBlockLayer(layer) && (
+        <>
+          <WordsField label={t('inspector.source')}>
+            <CommitTextarea
+              aria-label={t('layers.sourceLabel', { name })}
+              wrap='soft'
+              disabled={layer.locked}
+              className={`${field} text-muted-foreground`}
+              value={plainText(layer.source)}
+              onCommit={(text) => dispatch(setSourceText, layer.id, text)}
+            />
+          </WordsField>
+          <WordsField label={t('inspector.translation')}>
+            <CommitTextarea
+              aria-label={t('layers.translationLabel', { name })}
+              wrap='soft'
+              disabled={layer.locked}
+              className={`${field} border-primary/25`}
+              value={plainText(layer.translation)}
+              onCommit={(text) => dispatch(setText, layer.id, text)}
+            />
+          </WordsField>
+        </>
+      )}
+      {isTextLayer(layer) && (
+        <WordsField label={t('inspector.text')}>
+          <CommitTextarea
+            aria-label={t('layers.textLabel', { name })}
+            wrap='soft'
+            disabled={layer.locked}
+            className={field}
+            value={plainText(layer)}
+            onCommit={(text) => dispatch(setText, layer.id, text)}
+          />
+        </WordsField>
+      )}
+    </div>
+  )
+}
+
+function WordsField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className='grid min-w-0 gap-0.5'>
+      <span className='text-[8px] font-medium tracking-[0.06em] text-muted-foreground uppercase'>
+        {label}
+      </span>
+      {children}
     </div>
   )
 }
