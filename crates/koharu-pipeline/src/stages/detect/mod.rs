@@ -88,12 +88,12 @@ pub(crate) async fn detect(
         bubble: config.bubble,
         panel: config.panel,
     };
-    let read =
-        crop.map(|crop| scan.crop_imm(crop.x as u32, crop.y as u32, crop.width, crop.height));
+    let read = crop.map(|crop| area::canvas(&scan, crop));
     let (scan, read, detected) = task
         .inference(&[member], move |models| {
             let detector = models.get(&key, |device| model::load(config.model, device))?;
-            let detected = detector.inference(read.as_ref().unwrap_or(&scan), &options)?;
+            let image = read.as_ref().map_or(&scan, |(canvas, _)| canvas);
+            let detected = detector.inference(image, &options)?;
             Ok((scan, read, detected))
         })
         .await?;
@@ -104,9 +104,10 @@ pub(crate) async fn detect(
         let layout = {
             let _span = tracing::info_span!("layout").entered();
             match (read, crop, &area) {
-                (Some(read), Some(crop), Some(work)) => area::within(
-                    detected.layout(&read.to_rgb8()),
+                (Some((canvas, at)), Some(crop), Some(work)) => area::within(
+                    detected.layout(&canvas.to_rgb8()),
                     crop,
+                    at,
                     &work.area,
                     pixels.width(),
                     pixels.height(),

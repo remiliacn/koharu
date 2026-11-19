@@ -7,7 +7,8 @@
 
 use std::collections::HashMap;
 
-use koharu_ml::koharu_layout_highres::Layout;
+use image::{DynamicImage, Rgb, RgbImage, imageops};
+use koharu_ml::koharu_layout_highres::{Layout, Mask};
 use koharu_scene::{Content, Layer, LayerId, Op, Rect};
 use kurbo::{BezPath, Point, Shape as _};
 
@@ -17,29 +18,74 @@ use super::{
 };
 use crate::Area;
 
-/// The area's rectangle on a `width` by `height` page; `None` when it's off
-/// the page.
+/// What the detector reads past an area on every side: a quarter of its
+/// longer side, at least 32 pixels, as the fork's drawn-box detection read.
+/// A tight marquee leaves lettering without its balloon or panel around it,
+/// and on 36 letterings the detector found 20 read alone and 29 with this.
+fn context(rect: Rect) -> u32 {
+    ((rect.width.max(rect.height) as f32 * 0.25).ceil() as u32).max(32)
+}
+
+/// The smallest side of the white canvas a read is centred on. The detector
+/// scales what it reads up to its input, so a small area's lettering grew
+/// far past any page's; on a canvas this size the same 36 letterings were
+/// found 34 times.
+const CANVAS: u32 = 640;
+
+/// The area's rectangle on a `width` by `height` page with the context around
+/// it, cut to the page; `None` when it's off the page.
 pub(super) fn crop(area: &Area, width: u32, height: u32) -> Option<Rect> {
-    let (x0, y0) = (area.rect.x.max(0), area.rect.y.max(0));
-    let x1 = (i64::from(area.rect.x) + i64::from(area.rect.width)).min(i64::from(width));
-    let y1 = (i64::from(area.rect.y) + i64::from(area.rect.height)).min(i64::from(height));
-    (x1 > i64::from(x0) && y1 > i64::from(y0)).then(|| Rect {
-        x: x0,
-        y: y0,
-        width: (x1 - i64::from(x0)) as u32,
-        height: (y1 - i64::from(y0)) as u32,
+    let margin = i64::from(context(area.rect));
+    let (x0, y0) = (
+        (i64::from(area.rect.x) - margin).max(0),
+        (i64::from(area.rect.y) - margin).max(0),
+    );
+    let x1 = (i64::from(area.rect.x) + i64::from(area.rect.width) + margin).min(i64::from(width));
+    let y1 = (i64::from(area.rect.y) + i64::from(area.rect.height) + margin).min(i64::from(height));
+    (x1 > x0 && y1 > y0).then(|| Rect {
+        x: x0 as i32,
+        y: y0 as i32,
+        width: (x1 - x0) as u32,
+        height: (y1 - y0) as u32,
     })
 }
 
-/// The lettering of `layout`, read on the `crop` of a `width` by `height`
-/// page, on the page, those whose centre the area holds, with no panel or
-/// balloon: the crop shows only part of either.
-pub(super) fn within(layout: Layout, crop: Rect, area: &Area, width: u32, height: u32) -> Layout {
-    let (dx, dy) = (crop.x as u32, crop.y as u32);
+/// `crop` of `scan` centred on a white canvas at least `CANVAS` on a side,
+/// and where the crop's corner lies on it.
+pub(super) fn canvas(scan: &DynamicImage, crop: Rect) -> (DynamicImage, [u32; 2]) {
+    let read = scan.crop_imm(crop.x as u32, crop.y as u32, crop.width, crop.height);
+    let side = CANVAS.max(crop.width).max(crop.height);
+    let at = [(side - crop.width) / 2, (side - crop.height) / 2];
+    let mut canvas = RgbImage::from_pixel(side, side, Rgb([u8::MAX; 3]));
+    imageops::overlay(
+        &mut canvas,
+        &read.to_rgb8(),
+        i64::from(at[0]),
+        i64::from(at[1]),
+    );
+    (DynamicImage::ImageRgb8(canvas), at)
+}
+
+/// The lettering of `layout`, read on a canvas holding the `crop` of a
+/// `width` by `height` page at `at`, on the page: its mask cut to the crop,
+/// as the canvas past it is blank, and only those whose centre the area
+/// holds, with no panel or balloon, which the crop shows only part of.
+pub(super) fn within(
+    layout: Layout,
+    crop: Rect,
+    at: [u32; 2],
+    area: &Area,
+    width: u32,
+    height: u32,
+) -> Layout {
+    let (dx, dy) = (
+        i64::from(crop.x) - i64::from(at[0]),
+        i64::from(crop.y) - i64::from(at[1]),
+    );
     let lettering = layout
         .lettering
         .into_iter()
-        .map(|mut lettering| {
+        .filter_map(|mut lettering| {
             let [x0, y0, x1, y1] = lettering.bbox;
             lettering.bbox = [
                 x0 + dx as f32,
@@ -47,12 +93,11 @@ pub(super) fn within(layout: Layout, crop: Rect, area: &Area, width: u32, height
                 x1 + dx as f32,
                 y1 + dy as f32,
             ];
-            lettering.mask.x += dx;
-            lettering.mask.y += dy;
+            lettering.mask = cut(&lettering.mask, dx, dy, crop)?;
             lettering.bubble = None;
             lettering.panel = None;
             lettering.room = None;
-            lettering
+            Some(lettering)
         })
         .filter(|lettering| holds(area, centre(lettering.bbox)))
         .collect();
@@ -63,6 +108,34 @@ pub(super) fn within(layout: Layout, crop: Rect, area: &Area, width: u32, height
         bubbles: Vec::new(),
         panels: Vec::new(),
     }
+}
+
+/// `mask`, moved by (`dx`, `dy`) onto the page and cut to `crop`; `None` when
+/// none of it lies there.
+fn cut(mask: &Mask, dx: i64, dy: i64, crop: Rect) -> Option<Mask> {
+    let left = (i64::from(mask.x) + dx).max(i64::from(crop.x));
+    let top = (i64::from(mask.y) + dy).max(i64::from(crop.y));
+    let right = (i64::from(mask.x) + dx + i64::from(mask.width))
+        .min(i64::from(crop.x) + i64::from(crop.width));
+    let bottom = (i64::from(mask.y) + dy + i64::from(mask.height))
+        .min(i64::from(crop.y) + i64::from(crop.height));
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let pixels: Vec<u8> = (top..bottom)
+        .flat_map(|y| (left..right).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let (own_x, own_y) = (x - dx - i64::from(mask.x), y - dy - i64::from(mask.y));
+            mask.pixels[(own_y * i64::from(mask.width) + own_x) as usize]
+        })
+        .collect();
+    pixels.iter().any(|&value| value != 0).then(|| Mask {
+        x: left as u32,
+        y: top as u32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+        pixels,
+    })
 }
 
 /// What an area's detection changes on a page with `layers`: the unlocked
@@ -233,13 +306,65 @@ mod tests {
             bubbles: Vec::new(),
             panels: Vec::new(),
         };
-        let layout = within(read, crop, &left_half(), 100, 100);
+        let layout = within(read, crop, [0, 0], &left_half(), 100, 100);
         assert_eq!((layout.width, layout.height), (100, 100));
         assert_eq!(layout.lettering.len(), 1);
         let kept = &layout.lettering[0];
         assert_eq!(kept.bbox, [10.0, 20.0, 20.0, 30.0]);
         assert_eq!((kept.mask.x, kept.mask.y), (10, 20));
         assert_eq!((kept.bubble, kept.panel), (None, None));
+    }
+
+    /// An area is read with context around it, centred on a white canvas,
+    /// and what's found comes back onto the page cut to the crop.
+    #[test]
+    fn an_area_is_read_with_context_on_a_canvas_and_found_back_on_the_page() {
+        let area = Area {
+            rect: Rect {
+                x: 100,
+                y: 100,
+                width: 40,
+                height: 80,
+            },
+            pixels: vec![255; 40 * 80],
+        };
+        let crop = crop(&area, 1000, 1000).expect("on the page");
+        assert_eq!(
+            crop,
+            Rect {
+                x: 68,
+                y: 68,
+                width: 104,
+                height: 144,
+            }
+        );
+        let scan = DynamicImage::ImageRgb8(RgbImage::from_pixel(1000, 1000, Rgb([0; 3])));
+        let (canvas, at) = canvas(&scan, crop);
+        assert_eq!((canvas.width(), canvas.height()), (640, 640));
+        assert_eq!(at, [268, 248]);
+        assert_eq!(canvas.to_rgb8().get_pixel(0, 0).0, [255; 3]);
+        assert_eq!(canvas.to_rgb8().get_pixel(268, 248).0, [0; 3]);
+        // A lettering at the area's middle, its mask reaching two pixels onto
+        // the blank canvas left of the crop.
+        let mut found = lettering([300.0, 300.0, 320.0, 330.0]);
+        found.mask = Mask {
+            x: 266,
+            y: 300,
+            width: 60,
+            height: 1,
+            pixels: vec![255; 60],
+        };
+        let read = Layout {
+            width: 640,
+            height: 640,
+            lettering: vec![found],
+            bubbles: Vec::new(),
+            panels: Vec::new(),
+        };
+        let layout = within(read, crop, at, &area, 1000, 1000);
+        let kept = &layout.lettering[0];
+        assert_eq!(kept.bbox, [100.0, 120.0, 120.0, 150.0]);
+        assert_eq!((kept.mask.x, kept.mask.y, kept.mask.width), (68, 120, 58));
     }
 
     #[test]

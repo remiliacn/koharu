@@ -182,6 +182,29 @@ impl Lettering {
             _ => (None, None),
         };
 
+        let measured = outline(page, &ink, [left, top], size, ink_color);
+        // Lettering filled in one colour and outlined in a lighter one, on
+        // darker paper, splits with its fill on the paper's side and its
+        // outline as the ink: its fill is then the block's paper, enclosed by
+        // the outline and unlike the paper around. A fork addition: a blue
+        // fill in a white outline on a dark panel measured as white ink.
+        let (ink_color, paper_color, outline) = match (measured, ink_color, paper_color) {
+            (None, Some(band), Some(fill)) => {
+                match outlined_fill(page, &ink, [left, top], &block, size, fill) {
+                    Some(around) => (
+                        Some(fill),
+                        Some(around),
+                        Some(Outline {
+                            color: band,
+                            width: stroke_width.unwrap_or(size / 16.0),
+                        }),
+                    ),
+                    None => (ink_color, paper_color, None),
+                }
+            }
+            _ => (ink_color, paper_color, measured),
+        };
+
         Some(Typography {
             vertical,
             tilt,
@@ -189,9 +212,82 @@ impl Lettering {
             stroke_width,
             ink: ink_color,
             paper: paper_color,
-            outline: outline(page, &ink, [left, top], size, ink_color),
+            outline,
         })
     }
+}
+
+/// How unlike the paper around a block an outlined lettering's fill is, in
+/// some channel, as the outline's band must be unlike the ink.
+const FILL_CONTRAST: u8 = 80;
+
+/// The paper around `block` when `glyphs`, whose corner is `corner` on
+/// `page`, are an outline whose fill the ink split put with the paper: the
+/// pixels of colour `fill` under the block lie, nearly all of them, in what
+/// the glyphs enclose, and the paper in a band around the block is unlike
+/// it. Black lettering on white paper encloses its counters, but the paper
+/// between its glyphs isn't enclosed, and the paper around is the same white.
+fn outlined_fill(
+    page: &RgbImage,
+    glyphs: &GrayImage,
+    [left, top]: [u32; 2],
+    block: &Mask,
+    size: f32,
+    fill: [u8; 3],
+) -> Option<[u8; 3]> {
+    let near = |pixel: [u8; 3]| (0..3).all(|at| pixel[at].abs_diff(fill[at]) <= OUTLINE_TOLERANCE);
+    // A border, so the paper at the crop's edge is outside, not a hole.
+    let mut enclosed = GrayImage::new(glyphs.width() + 2, glyphs.height() + 2);
+    for (x, y, pixel) in glyphs.enumerate_pixels() {
+        if pixel.0[0] != 0 {
+            enclosed.put_pixel(x + 1, y + 1, Luma([255]));
+        }
+    }
+    fill_holes(&mut enclosed);
+    let (mut filled, mut held) = (0usize, 0usize);
+    for (x, y, pixel) in glyphs.enumerate_pixels() {
+        let (page_x, page_y) = (left + x, top + y);
+        if pixel.0[0] == 0
+            && block.contains(page_x, page_y)
+            && near(page.get_pixel(page_x, page_y).0)
+        {
+            filled += 1;
+            held += usize::from(enclosed.get_pixel(x + 1, y + 1).0[0] != 0);
+        }
+    }
+    if filled < 16 || (held as f32) < 0.8 * filled as f32 {
+        return None;
+    }
+    let margin = (0.25 * size).ceil().max(4.0) as u32;
+    let (x0, y0) = (
+        block.x.saturating_sub(margin),
+        block.y.saturating_sub(margin),
+    );
+    let x1 = (block.x + block.width + margin).min(page.width());
+    let y1 = (block.y + block.height + margin).min(page.height());
+    let mut channels: [Vec<u8>; 3] = Default::default();
+    for (x, y) in (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))) {
+        let glyph = x
+            .checked_sub(left)
+            .zip(y.checked_sub(top))
+            .and_then(|(x, y)| glyphs.get_pixel_checked(x, y))
+            .is_some_and(|pixel| pixel.0[0] != 0);
+        if !block.contains(x, y) && !glyph {
+            for (channel, value) in channels.iter_mut().zip(page.get_pixel(x, y).0) {
+                channel.push(value);
+            }
+        }
+    }
+    if channels[0].len() < 16 {
+        return None;
+    }
+    let around: [u8; 3] = std::array::from_fn(|at| {
+        channels[at].sort_unstable();
+        channels[at][channels[at].len() / 2]
+    });
+    (0..3)
+        .any(|at| around[at].abs_diff(fill[at]) > FILL_CONTRAST)
+        .then_some(around)
 }
 
 /// How far from the band's median colour, in every channel, an outline's
@@ -906,6 +1002,69 @@ mod tests {
         let fitted = glyph_mask(&detected, [80.0, 36.0, 120.0, 180.0], &page);
         assert!(fitted.contains(100, 48));
         assert!(!fitted.contains(100, 16));
+    }
+
+    /// A column of four glyphs, wide and narrow in turn, each a `fill`
+    /// square in a band of `band`, on `paper`, and the lettering detected
+    /// over them, its mask on the glyphs.
+    fn column(paper: [u8; 3], band: [u8; 3], fill: [u8; 3]) -> (RgbImage, Lettering) {
+        let mut page = RgbImage::from_pixel(160, 320, Rgb(paper));
+        let (x, y, width, height) = (52u32, 40u32, 56u32, 236u32);
+        let mut pixels = vec![0; (width * height) as usize];
+        for (glyph, top) in [40u32, 100, 160, 220].into_iter().enumerate() {
+            let inset = if glyph % 2 == 0 { 0 } else { 8 };
+            for (gx, gy) in
+                (52 + inset..108 - inset).flat_map(|x| (top..top + 56).map(move |y| (x, y)))
+            {
+                let inner =
+                    (60 + inset..100 - inset).contains(&gx) && (top + 8..top + 48).contains(&gy);
+                page.put_pixel(gx, gy, Rgb(if inner { fill } else { band }));
+                pixels[((gy - y) * width + gx - x) as usize] = 255;
+            }
+        }
+        let lettering = Lettering {
+            kind: super::super::Kind::Text,
+            score: 0.9,
+            bbox: [52.0, 40.0, 108.0, 276.0],
+            mask: Mask {
+                x,
+                y,
+                width,
+                height,
+                pixels,
+            },
+            bubble: None,
+            panel: None,
+            room: None,
+        };
+        (page, lettering)
+    }
+
+    /// A blue fill in a white outline on a dark panel splits with the blue on
+    /// the paper's side; the blue the outline encloses is the ink.
+    #[test]
+    fn a_fill_enclosed_by_a_lighter_outline_is_the_ink() {
+        let (page, lettering) = column([24; 3], [250; 3], [33, 134, 235]);
+        let found = lettering.typography(&page).expect("ink");
+        assert_eq!(found.ink, Some([33, 134, 235]));
+        assert_eq!(found.paper, Some([24; 3]));
+        assert_eq!(found.outline.map(|outline| outline.color), Some([250; 3]));
+    }
+
+    /// White glyphs on a dark panel enclose nothing of another colour, and
+    /// black ones on white paper enclose the paper's own white: each keeps its
+    /// own ink.
+    #[test]
+    fn plain_lettering_keeps_its_ink() {
+        let (page, lettering) = column([24; 3], [250; 3], [250; 3]);
+        assert_eq!(
+            lettering.typography(&page).expect("ink").ink,
+            Some([250; 3])
+        );
+        let (page, lettering) = column([255; 3], [0; 3], [255; 3]);
+        let found = lettering.typography(&page).expect("ink");
+        assert_eq!(found.ink, Some([0; 3]));
+        assert_eq!(found.outline, None);
     }
 
     #[test]

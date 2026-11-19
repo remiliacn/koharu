@@ -136,6 +136,10 @@ impl Models {
             let _span = tracing::info_span!("load", model = %key.name).entered();
             let model = self.runtime.block_on(loaded(key, load))?;
             self.loaded.insert(key.clone(), Box::new(model));
+        } else if Cuda::device_count() > 0 {
+            if let Err(error) = Cuda::empty_cache() {
+                tracing::warn!(%error, "couldn't empty libtorch's CUDA cache");
+            }
         }
         Ok(self.loaded[key]
             .downcast_ref()
