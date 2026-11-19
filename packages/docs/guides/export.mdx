@@ -21,14 +21,15 @@ Review the pages before choosing **File → Export Project**. Export always writ
     </Tabs>
   </Step>
   <Step title="Choose a destination">
-    For PNG and PSD, select a folder in the native dialog. Files are numbered in page order with at least three digits:
+    For PNG and PSD, select a folder in the native dialog. Each page keeps the name of the image it was imported from; a page without one is named by its number, and a name used twice gets ` (2)`:
 
     ```text
-    001.png
-    002.png
+    cover.png
+    chapter 1 p01.png
+    chapter 1 p01 (2).png
     ```
 
-    For CBZ, choose where to save the archive; it is named after the project by default, and its pages are numbered the same way. Existing files with the same names are overwritten.
+    For CBZ, choose where to save the archive; it is named after the project by default, and its pages start with their number so readers keep the page order, as `0001_cover.png`. Existing files with the same names are overwritten. To export one page, right-click it in the page list and choose **Export**.
 
   </Step>
 </Steps>

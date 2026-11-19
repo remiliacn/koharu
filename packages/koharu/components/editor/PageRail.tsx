@@ -17,10 +17,16 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { call, dispatch } from '@/lib/backend'
-import { useImportPages, usePage, useProject } from '@/lib/queries'
+import { useExport, useImportPages, usePage, useProject } from '@/lib/queries'
 import { deletePages, movePage } from '@/lib/scene'
 import { pipelineStages, useKoharuStore } from '@/lib/store'
-import { commands, type ImportSource, type PageSummary, type Stage } from '@koharu/ipc/protocol'
+import {
+  commands,
+  type ExportFormat,
+  type ImportSource,
+  type PageSummary,
+  type Stage,
+} from '@koharu/ipc/protocol'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,6 +43,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@koharu/ui/components/context-menu'
 import {
@@ -44,6 +53,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@koharu/ui/components/dropdown-menu'
 import { ScrollArea } from '@koharu/ui/components/scroll-area'
@@ -62,12 +74,15 @@ export function PageRail() {
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
   const { importPages, importing } = useImportPages()
+  const { exportPages } = useExport()
   const anchor = useRef<number | null>(null)
   // A page being dragged, and the place of the page it's over.
   const [dragged, setDragged] = useState<{ page: string; target: number | null } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
   // The page Delete asks about, kept while its dialog closes so the dialog still names it.
   const [pageToDelete, setPageToDelete] = useState<{ pages: string[]; number: number } | null>(null)
+  // Delete then Enter deletes, as Explorer's confirmation does.
+  const confirmDelete = useRef<HTMLButtonElement>(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const pageList = useRef<HTMLDivElement>(null)
   const rail = useRef<HTMLElement>(null)
@@ -289,6 +304,7 @@ export function PageRail() {
                         dragged={dragged?.page === page.id}
                         target={dragged !== null && dragged.target === index}
                         onSelect={(additive, range) => select(index, additive, range)}
+                        onExport={(format) => exportPages(format, [page.id])}
                         onRun={(stage) =>
                           void call(commands.runPipeline, { pages: [page.id] }, [stage]).catch(
                             () => undefined,
@@ -328,7 +344,7 @@ export function PageRail() {
         </div>
       </aside>
       <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
-        <AlertDialogContent>
+        <AlertDialogContent initialFocus={confirmDelete}>
           <AlertDialogHeader>
             <AlertDialogTitle>
               {(pageToDelete?.pages.length ?? 0) > 1
@@ -346,6 +362,7 @@ export function PageRail() {
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
             <AlertDialogAction
+              ref={confirmDelete}
               variant='destructive'
               onClick={() => {
                 setConfirmingDelete(false)
@@ -425,6 +442,7 @@ function PageItem({
   dragged,
   target,
   onSelect,
+  onExport,
   onRun,
   onDelete,
 }: {
@@ -438,6 +456,7 @@ function PageItem({
   dragged: boolean
   target: boolean
   onSelect: (additive: boolean, range: boolean) => void
+  onExport: (format: ExportFormat) => void
   onRun: (stage: Stage) => void
   onDelete: () => void
 }) {
@@ -511,8 +530,8 @@ function PageItem({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align='end' className={pageMenu}>
                   <PageActions
-                    Item={DropdownMenuItem}
-                    Separator={DropdownMenuSeparator}
+                    menu={dropdownMenu}
+                    onExport={onExport}
                     onRun={onRun}
                     onDelete={onDelete}
                   />
@@ -526,12 +545,7 @@ function PageItem({
         </article>
       </ContextMenuTrigger>
       <ContextMenuContent className={pageMenu}>
-        <PageActions
-          Item={ContextMenuItem}
-          Separator={ContextMenuSeparator}
-          onRun={onRun}
-          onDelete={onDelete}
-        />
+        <PageActions menu={contextMenu} onExport={onExport} onRun={onRun} onDelete={onDelete} />
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -542,22 +556,49 @@ const pageMenu = 'w-auto min-w-20 border border-border/50 p-0.5 shadow-sm ring-0
 const pageMenuItem =
   'min-h-7 gap-1 px-1.5 py-0.5 text-[11px] [&_svg:not([class*="size-"])]:size-3.5'
 
-/** A page's actions, as the items of the menu `Item` and `Separator` belong to: each pipeline
- * stage on the page alone, in the pipeline's order, then deleting it. */
+/** The parts of a menu the page's actions go in: its button's or its right-click's. */
+const dropdownMenu = {
+  Item: DropdownMenuItem,
+  Separator: DropdownMenuSeparator,
+  Sub: DropdownMenuSub,
+  SubTrigger: DropdownMenuSubTrigger,
+  SubContent: DropdownMenuSubContent,
+}
+const contextMenu = {
+  Item: ContextMenuItem,
+  Separator: ContextMenuSeparator,
+  Sub: ContextMenuSub,
+  SubTrigger: ContextMenuSubTrigger,
+  SubContent: ContextMenuSubContent,
+}
+
+/** A page's actions, as an ordinary user reaches for them: exporting it, each pipeline stage on
+ * the page alone in the order the interface lists them, then deleting it. */
 function PageActions({
-  Item,
-  Separator,
+  menu: { Item, Separator, Sub, SubTrigger, SubContent },
+  onExport,
   onRun,
   onDelete,
 }: {
-  Item: typeof DropdownMenuItem | typeof ContextMenuItem
-  Separator: typeof DropdownMenuSeparator | typeof ContextMenuSeparator
+  menu: typeof dropdownMenu | typeof contextMenu
+  onExport: (format: ExportFormat) => void
   onRun: (stage: Stage) => void
   onDelete: () => void
 }) {
   const { t } = useTranslation()
   return (
     <>
+      <Sub>
+        <SubTrigger className={pageMenuItem}>{t('menu.export')}</SubTrigger>
+        <SubContent className={pageMenu}>
+          {(['png', 'psd'] as const).map((format) => (
+            <Item key={format} className={pageMenuItem} onClick={() => onExport(format)}>
+              {format.toUpperCase()}…
+            </Item>
+          ))}
+        </SubContent>
+      </Sub>
+      <Separator />
       {pipelineStages.map((stage) => (
         <Item key={stage} className={pageMenuItem} onClick={() => onRun(stage)}>
           {t(`navigator.run.${stage}`)}

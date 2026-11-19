@@ -8,9 +8,11 @@ import {
   useMutation,
   useQuery,
 } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 
 import {
   commands,
+  type ExportFormat,
   type FontFamily,
   type History,
   type Page,
@@ -133,6 +135,22 @@ export function useCommand<Args extends unknown[], Result>(
     onSuccess,
   })
   return { run: (...args: Args) => mutation.mutate(args), busy }
+}
+
+/** Exports `pages`, or the whole project when it's empty, in a format; a PSD's unnamed layers take
+ * the interface's language. */
+export function useExport() {
+  const { t } = useTranslation()
+  const { run, busy } = useCommand(['export-project'], commands.export, 'menu.export')
+  const labels = {
+    background: t('psd.background'),
+    cleanup: t('psd.cleanup'),
+    outline: t('psd.outline'),
+  }
+  return {
+    exportPages: (format: ExportFormat, pages: PageId[] = []) => run(format, labels, pages),
+    exporting: busy,
+  }
 }
 
 /** Imports pages; the project's change arrives as an event. */

@@ -1042,9 +1042,9 @@ export const commands = {
     invoke<ArrayBuffer>('get_font_preview', { family }, { headers: headers() }),
   /** Picks files or a folder, or takes the dropped ones, and adds their pages after the project's last: the files in name order, numbers by value, an archive's or a PDF's own pages in theirs. */
   import: (source: ImportSource) => invoke<null>('import', { source }, { headers: headers() }),
-  /** Picks where the open project's pages go, and writes them there. `labels` names a PSD's layers the scene names nothing, in the interface's language. */
-  export: (format: ExportFormat, labels: Labels) =>
-    invoke<null>('export', { format, labels }, { headers: headers() }),
+  /** Picks where the open project's pages go, and writes them there: `pages`, or every page when it's empty. `labels` names a PSD's layers the scene names nothing, in the interface's language. */
+  export: (format: ExportFormat, labels: Labels, pages: PageId[]) =>
+    invoke<null>('export', { format, labels, pages }, { headers: headers() }),
   /** The canvas element's rectangle, in CSS pixels from the window's corner, and the page's `devicePixelRatio`, physical pixels to a CSS pixel. */
   setViewport: (x: number, y: number, width: number, height: number, scale: number) =>
     invoke<null>('set_viewport', { x, y, width, height, scale }, { headers: headers() }),

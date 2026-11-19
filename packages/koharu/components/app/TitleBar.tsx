@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next'
 import { AboutDialog } from '@/components/app/AboutDialog'
 import { useMacOS, WindowControls } from '@/components/app/WindowChrome'
 import { call, dispatch } from '@/lib/backend'
-import { useCommand, useImportPages, usePage, useProject } from '@/lib/queries'
+import { useExport, useImportPages, usePage, useProject } from '@/lib/queries'
 import { deleteSelection } from '@/lib/scene'
 import { useKoharuStore } from '@/lib/store'
 import { commands } from '@koharu/ipc/protocol'
@@ -48,17 +48,7 @@ export function TitleBar() {
   const selectLayers = useKoharuStore((state) => state.selectLayers)
   const setSettingsOpen = useKoharuStore((state) => state.setSettingsOpen)
   const { importPages, importing } = useImportPages()
-  const { run: exportProject, busy: exporting } = useCommand(
-    ['export-project'],
-    commands.export,
-    'menu.export',
-  )
-
-  const psdLabels = {
-    background: t('psd.background'),
-    cleanup: t('psd.cleanup'),
-    outline: t('psd.outline'),
-  }
+  const { exportPages, exporting } = useExport()
 
   const closeProject = () => void call(commands.close).catch(() => undefined)
 
@@ -154,7 +144,7 @@ export function TitleBar() {
                     <MenubarItem
                       key={format}
                       disabled={exporting}
-                      onClick={() => exportProject(format, psdLabels)}
+                      onClick={() => exportPages(format)}
                     >
                       {format.toUpperCase()}…
                     </MenubarItem>
