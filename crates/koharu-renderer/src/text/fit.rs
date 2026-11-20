@@ -524,10 +524,11 @@ impl InPath<'_> {
             })
             .collect();
         let axis = room::axis(&bands).unwrap_or(bounds.center().x);
-        // Each line's span from start to end. A band with no room on the axis
-        // holds a line of none there, so a word forced into it overflows
-        // about the axis.
-        let spans: Vec<(f32, f32)> = bands
+        // Each line's span from start to end, `None` for a band with no room
+        // on the axis: a line forced into one overflows centred on the axis,
+        // as the fork has it, not from it on down, which put a column too
+        // large for a narrow balloon below its middle and past its end.
+        let roomy: Vec<Option<(f32, f32)>> = bands
             .iter()
             .map(|spans| {
                 match self.edge {
@@ -536,16 +537,21 @@ impl InPath<'_> {
                 }
                 .map(|(start, end)| (start as f32 + air, end as f32 - air))
                 .filter(|(start, end)| end > start)
-                .unwrap_or((axis as f32, axis as f32))
             })
             .collect();
-        // The edge every span reaches, which lines aligned to it share.
-        let shared = self.edge.map(|side| {
+        let spans: Vec<(f32, f32)> = roomy
+            .iter()
+            .map(|span| span.unwrap_or((axis as f32, axis as f32)))
+            .collect();
+        // The edge every span with room reaches, which lines aligned to it
+        // share; with none, the lines are centred.
+        let shared = self.edge.and_then(|side| {
+            let held = roomy.iter().flatten();
             let edge = match side {
-                Side::Low => spans.iter().map(|span| span.0).fold(f32::MIN, f32::max),
-                Side::High => spans.iter().map(|span| span.1).fold(f32::MAX, f32::min),
+                Side::Low => held.map(|span| span.0).reduce(f32::max)?,
+                Side::High => held.map(|span| span.1).reduce(f32::min)?,
             };
-            (side, edge)
+            Some((side, edge))
         });
         let rooms: Vec<f32> = spans
             .iter()
@@ -588,24 +594,37 @@ impl InPath<'_> {
         // that takes it past the shared edge or a line past its span's far
         // end.
         let longest = used.iter().copied().fold(0.0, f32::max);
+        let held = || {
+            roomy
+                .iter()
+                .zip(&used)
+                .filter_map(|(span, used)| Some(((*span)?, *used)))
+        };
+        // Text longer than its spans hold, as a size set larger than the
+        // frame takes even at the smallest fit leaves it, overflows centred
+        // on the frame along its lines, past both ends, as a fork rule:
+        // from the shared edge it ran past the frame's one end.
+        let middle = bounds.center().x as f32;
         let block = shared.map(|(side, edge)| {
             let centred = axis as f32 - longest * 0.5;
             match side {
                 Side::Low => {
-                    let latest = spans
-                        .iter()
-                        .zip(&used)
+                    let latest = held()
                         .map(|(span, used)| span.1 - used)
                         .fold(f32::MAX, f32::min);
-                    centred.min(latest).max(edge)
+                    match latest < edge {
+                        true => middle - longest * 0.5,
+                        false => centred.min(latest).max(edge),
+                    }
                 }
                 Side::High => {
-                    let earliest = spans
-                        .iter()
-                        .zip(&used)
+                    let earliest = held()
                         .map(|(span, used)| span.0 + used)
                         .fold(f32::MIN, f32::max);
-                    (centred + longest).max(earliest).min(edge) - longest
+                    match earliest > edge {
+                        true => middle - longest * 0.5,
+                        false => (centred + longest).max(earliest).min(edge) - longest,
+                    }
                 }
             }
         });
@@ -614,10 +633,14 @@ impl InPath<'_> {
             .into_iter()
             .enumerate()
             .map(|(at, range)| {
-                let (start, room) = block
-                    .map_or((spans[at].0, spans[at].1 - spans[at].0), |block| {
-                        (block, longest)
-                    });
+                let (start, room) = match (roomy[at], block) {
+                    (None, _) => (axis as f32 - used[at] * 0.5, used[at]),
+                    (Some(_), Some(block)) => (block, longest),
+                    (Some((start, end)), None) if used[at] > end - start => {
+                        (middle - used[at] * 0.5, used[at])
+                    }
+                    (Some((start, end)), None) => (start, end - start),
+                };
                 line(
                     self.segments,
                     range,

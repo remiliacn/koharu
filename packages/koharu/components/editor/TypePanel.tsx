@@ -454,6 +454,12 @@ function sameFont(left: string, right: string): boolean {
 }
 
 const fontSizePresets = [8, 9, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72, 96]
+/** The sizes the + and − buttons step through: the presets, then every 12 up to the field's
+ * largest, 300, so a size past the menu's last still grows. */
+const fontSizeSteps = [
+  ...fontSizePresets,
+  ...Array.from({ length: (300 - 96) / 12 }, (_, index) => 108 + 12 * index),
+]
 
 function FontSizeField({
   value,
@@ -480,7 +486,7 @@ function FontSizeField({
     setDraft(autoFit ? null : value)
   }, [autoFit, value])
 
-  // The stepper buttons walk the preset scale instead of the fixed step, so their changes are
+  // The stepper buttons walk the size steps instead of the fixed step, so their changes are
   // vetoed and the preset is tracked here until the press is released and committed once.
   const change: NonNullable<ComponentProps<typeof NumberField>['onValueChange']> = (
     next,
@@ -494,8 +500,8 @@ function FontSizeField({
     const current = pressed.current ?? draft ?? value ?? 24
     const preset =
       details.reason === 'increment-press'
-        ? fontSizePresets.find((size) => size > current)
-        : fontSizePresets.findLast((size) => size < current)
+        ? fontSizeSteps.find((size) => size > current)
+        : fontSizeSteps.findLast((size) => size < current)
     if (preset !== undefined) {
       pressed.current = preset
       setDraft(preset)

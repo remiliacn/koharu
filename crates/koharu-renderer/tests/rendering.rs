@@ -330,6 +330,66 @@ fn text_a_box_cannot_hold_overflows_and_still_draws() {
     );
 }
 
+/// A sound effect's column too wide for its spiky balloon even at half size,
+/// as on a chapter's page 9 (a fork regression): it overflowed from the
+/// balloon's middle on down, past its end, and now overflows about the
+/// middle.
+#[test]
+fn a_column_no_part_of_its_balloon_holds_overflows_about_the_middle() {
+    let (_dir, session, page, change) = page(
+        1400,
+        900,
+        vec![json!({
+            "op": "add_layer", "id": "$text", "page": "$page", "index": 0, "layer": {
+                "kind": "text", "content": "\u{55ef}~!!", "language": "zh-Hans",
+                "direction": "vertical",
+                "style": {"chars": {"size": 216.0, "stroke": [1.0, 1.0, 1.0, 1.0], "stroke_width": 5.0}, "align": "start"},
+                "frame": {"path": {"path": "M1038.4776900347908,268.0270275398584 L1050.427260271134,315.29268718302785 L1063.5581332751021,429.5449526929671 L1064.073844429191,481.78223862940854 L1061.4235232304602,504.1870550210589 L1055.1567486066865,520.9419807390328 L1058.6676676199688,525.597455761216 L1064.8452303524484,526.9530805936381 L1082.2333625409863,539.1863491263703 L1094.0771384676084,556.0304867356385 L1115.3700438912906,605.0571343736132 L1116.8475256559398,618.9789534945157 L1126.341261098647,642.1061882480243 L1130.680132885548,635.6120222802626 L1135.4248197990257,613.9905527165841 L1144.208097784589,601.9966364325542 L1147.069487806841,581.58065134389 L1155.0694189644323,571.6811007746068 L1159.8750343440233,560.1093221376193 L1168.6583123295866,548.1154058535893 L1174.9860154194741,541.4101710623065 L1180.741440504911,538.7881332887565 L1183.3025498123475,534.4938674475023 L1182.4582745182622,526.538542235558 L1176.7920613241197,511.05002945871195 L1173.2648197903707,487.28958823463955 L1176.6538818714262,471.8456814034406 L1183.7649317892854,463.04608089741106 L1175.3102179437185,430.7580364569439 L1161.06307235603,296.51192350538315 L1171.0964407622548,277.3460288373805 L1168.2633341651836,269.6017724489575 L1164.1801371474505,269.0294944445071 L1163.247678802755,268.0270275398584 Z", "fit": "shrink", "anchor": "center"}},
+            },
+        })],
+    );
+    let renderer = renderer();
+    let frame = renderer.render(&session, page).expect("a frame");
+    assert!(text(&frame, &change, "text").overflowed);
+    let bounds = frame
+        .layer(layer(&change, "text"))
+        .and_then(|layer| layer.bounds())
+        .expect("bounds");
+    // The balloon runs from 268 to 642 down the page.
+    assert!(
+        bounds.y0 > 268.0 - 8.0 && bounds.y1 < 642.0 + 8.0,
+        "past the balloon: {bounds:?}"
+    );
+}
+
+/// A column with room in its balloon but longer than the balloon even at
+/// half size, as a size set past the fitted one makes it, overflows about
+/// the balloon's middle, not from its top past its bottom.
+#[test]
+fn a_column_longer_than_its_balloon_overflows_about_the_middle() {
+    let (_dir, session, page, change) = page(
+        400,
+        700,
+        vec![json!({
+            "op": "add_layer", "id": "$text", "page": "$page", "index": 0, "layer": {
+                "kind": "text", "content": "\u{3042}\u{3044}\u{3046}\u{3048}\u{304a}\u{304b}\u{304d}\u{304f}", "language": "ja",
+                "direction": "vertical",
+                "style": {"chars": {"size": 100.0}, "align": "start"},
+                "frame": {"path": {"path": "M150 200 L250 200 L250 500 L150 500 Z", "fit": "shrink", "anchor": "center"}},
+            },
+        })],
+    );
+    let renderer = renderer();
+    let frame = renderer.render(&session, page).expect("a frame");
+    assert!(text(&frame, &change, "text").overflowed);
+    let bounds = frame
+        .layer(layer(&change, "text"))
+        .and_then(|layer| layer.bounds())
+        .expect("bounds");
+    let middle = (bounds.y0 + bounds.y1) / 2.0;
+    assert!((middle - 350.0).abs() < 10.0, "off the middle: {bounds:?}");
+}
+
 #[test]
 fn masks_apply_in_order_and_cropping_drops_them() {
     if !gpu() {
