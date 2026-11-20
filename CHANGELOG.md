@@ -1,3 +1,47 @@
+## [0.89.0](https://github.com/koharu-rs/koharu/compare/0.88.0..0.89.0) - 2026-11-20
+
+### ⛰️  Features
+
+- *(models)* Make Hayai OCR the default recognizer with its new 512-patch budget, and pin Hayai, manga-ocr-ar, Koharu Layout HighRes and Qwen 3.8 27B to their latest commits - ([9eac4b0](https://github.com/koharu-rs/koharu/commit/9eac4b066a05eb2ad3d329270ffbff780a816135))
+
+### 🐛 Bug Fixes
+
+- *(pipeline)* Eliminate rows in the tone solver by iterator, as clippy's needless_range_loop requires - ([c19c7d4](https://github.com/koharu-rs/koharu/commit/c19c7d4a0d1da09ef629d3005f13584afedd98dd))
+
+## [0.88.0](https://github.com/koharu-rs/koharu/compare/0.87.0..0.88.0) - 2026-11-20
+
+### ⛰️  Features
+
+- *(inpaint)* Clean up and fill with FLUX.3 and Qwen-Image by a reference edit of each window, kept whole under the mask, and drop their masked inpaint - ([c1ce1c4](https://github.com/koharu-rs/koharu/commit/c1ce1c47b115d9e9f0f33533696b4186b0312fcf))
+
+### 🐛 Bug Fixes
+
+- *(bindgen)* Give the reason a library does not open, such as a missing glibc version, which libloading 0.9 keeps in the source of its "dlopen failed" - ([4237b8d](https://github.com/koharu-rs/koharu/commit/4237b8ddc618abf915a9b5d4aa673a245f69ea56))
+- *(ml)* Restore the flux3_klein bench and the diffusers module, which 4e602eca deleted by mistake - ([b21c917](https://github.com/koharu-rs/koharu/commit/b21c9176fe0b06c37a1831fea18394d1e996e3ef))
+- *(runtime)* Load llama.cpp b12565, stable-diffusion.cpp and the shim from releases built on Ubuntu 24.04, as the ones built on 26.04 needed glibc 2.43 - ([f020bc2](https://github.com/koharu-rs/koharu/commit/f020bc2957f03d6961a25d41a95e1423cba53545))
+- *(runtime)* Address an AMD GPU on Linux by the target HSA_OVERRIDE_GFX_VERSION gives it, which ROCm lists it and loads kernels by, instead of finding no GPU with its own - ([4e602ec](https://github.com/koharu-rs/koharu/commit/4e602ecaa613a4b7e43d7b3d4e3471c6c12b75e3))
+- *(ui)* Move the react-colorful pin to omgovich/react-colorful#246 as reviewed - ([6ce622d](https://github.com/koharu-rs/koharu/commit/6ce622de8843139e5e8909daa0567279e6602671))
+
+### 🚜 Refactor
+
+- *(runtime)* Simplify the Linux GPU probe and drop its test - ([c5dccd1](https://github.com/koharu-rs/koharu/commit/c5dccd154c1bc3fc3c11f2484ea80db89602eb76))
+
+## [0.87.0](https://github.com/koharu-rs/koharu/compare/0.86.4..0.87.0) - 2026-11-20
+
+### ⛰️  Features
+
+- *(diffusion)* Replace Qwen-Image 2.1 with its Turbo, cache steps and tile the VAE in every diffusion model, let sd.cpp pick its kernels, and stop a fill under way - ([36126c8](https://github.com/koharu-rs/koharu/commit/36126c8ff271c78afecf9db8cb75c98f4b345e08))
+
+### 🐛 Bug Fixes
+
+- *(config)* Read a value that doesn't read, such as a removed model's id, as its default instead of failing the section - ([ada165a](https://github.com/koharu-rs/koharu/commit/ada165a7e54b9b975f3492524e53b55bc043796b))
+- *(pipeline)* Make the models' GPU current on every call, as libtorch's attention picks its kernel by the current device and on a second GPU ran its math fallback over the whole score matrix ([#1408](https://github.com/koharu-rs/koharu/issues/1408)) - ([5f6b48a](https://github.com/koharu-rs/koharu/commit/5f6b48a138d95687fdc162bf3122406717f78a29))
+- *(runtime)* Keep AOTriton's kernels from the HIP libtorch archive, which the store dropped as no library, failing every fused attention as an invalid kernel image ([#1408](https://github.com/koharu-rs/koharu/issues/1408)) - ([1c5c6f7](https://github.com/koharu-rs/koharu/commit/1c5c6f7f09206ce27f20f6fcf7add1f744787fed))
+
+### 🚜 Refactor
+
+- *(ml)* Remove MOSS-Image, which sd.cpp can't edit with and which invents lettering - ([e68cdff](https://github.com/koharu-rs/koharu/commit/e68cdff059d31299bb9cc4619a8d1887fbdc6a12))
+
 ## [0.86.4](https://github.com/koharu-rs/koharu/compare/0.86.3..0.86.4) - 2026-11-19
 
 ### 🐛 Bug Fixes
