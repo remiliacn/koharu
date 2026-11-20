@@ -174,10 +174,15 @@ impl Models {
                 }
             })?;
             self.loaded.insert(key.clone(), Box::new(model));
-        } else if Cuda::device_count() > 0 {
-            if let Err(error) = Cuda::empty_cache() {
-                tracing::warn!(%error, "couldn't empty libtorch's CUDA cache");
-            }
+        } else if Cuda::device_count() > 0
+            // libtorch's cache keeps what the torch models' last calls in
+            // this run freed, and stable-diffusion.cpp sizes its work to the
+            // memory free: after detection and OCR, FLUX.3 Klein found 1.8 GB
+            // of 10 free and failed. A fork addition; upstream empties it
+            // between runs.
+            && let Err(error) = Cuda::empty_cache()
+        {
+            tracing::warn!(%error, "couldn't empty libtorch's CUDA cache");
         }
         Ok(self.loaded[key]
             .downcast_ref()

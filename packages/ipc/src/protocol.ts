@@ -378,7 +378,7 @@ export type ImportSource =
   | { paths: string[] }
 
 /**  The inpainters, by id in the section and by name. */
-export type Inpainter = 'lama' | 'flux3-klein' | 'moss-image' | 'qwen-image' | 'rorem-mixed'
+export type Inpainter = 'lama' | 'flux3-klein' | 'qwen-image' | 'rorem-mixed'
 
 export type InpainterConfig = {
   /**  What cleans pages and the Remove brush's areas. */

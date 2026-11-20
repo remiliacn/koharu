@@ -13,7 +13,7 @@ mod processor;
 
 use anyhow::{Context, Result, ensure};
 use image::{DynamicImage, GrayImage, RgbImage};
-use koharu_diffusion::{ImageParams, SampleMethod, Scheduler};
+use koharu_diffusion::{Canceller, ImageParams, SampleMethod, Scheduler};
 use koharu_runtime::Repository;
 
 use self::{
@@ -68,6 +68,11 @@ impl RoremMixed {
         .context("failed to resolve RORem mixed model assets")?;
         let model = Model::new(device, &paths)?;
         Ok(Self { model })
+    }
+
+    /// What stops an inpainting under way.
+    pub fn canceller(&self) -> Canceller {
+        self.model.canceller.clone()
     }
 
     pub fn inference(

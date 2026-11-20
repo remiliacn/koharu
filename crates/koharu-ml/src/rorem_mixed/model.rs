@@ -9,8 +9,7 @@ use std::{path::PathBuf, sync::Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
 use image::{DynamicImage, RgbImage};
-use koharu_diffusion::{Context, ContextParams, ImageParams};
-use koharu_runtime::Backend;
+use koharu_diffusion::{Canceller, Context, ContextParams, ImageParams};
 
 #[derive(Debug)]
 pub(super) struct ModelPaths {
@@ -24,12 +23,13 @@ pub(super) struct ModelPaths {
 #[derive(Debug)]
 pub(super) struct Model {
     context: Mutex<Context>,
+    /// Stops a generation under way.
+    pub(super) canceller: Canceller,
 }
 
 impl Model {
     /// The model on `device`.
     pub(super) fn new(device: &crate::Device, paths: &ModelPaths) -> Result<Self> {
-        let cuda = matches!(device.backend, Backend::Cuda { .. });
         let context = Context::new(&ContextParams {
             model: Some(&paths.version_marker),
             diffusion_model: Some(&paths.diffusion_model),
@@ -38,12 +38,11 @@ impl Model {
             clip_g: Some(&paths.clip_g),
             device: Some(&device.name),
             mmap: true,
-            flash_attention: cuda,
-            conv_direct: cuda,
             ..ContextParams::default()
         })
         .context("failed to load RORem mixed components")?;
         Ok(Self {
+            canceller: context.canceller(),
             context: Mutex::new(context),
         })
     }
