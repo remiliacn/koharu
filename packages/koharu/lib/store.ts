@@ -186,17 +186,32 @@ export const useKoharuStore = create<KoharuStore>()(
         }),
     }),
     {
-      // The shortcuts outlive a restart; a binding saved for an action that's gone is dropped,
-      // and an action saved before it existed keeps its default.
+      // The shortcuts and the stages a run does outlive a restart; a binding saved for an action
+      // that's gone is dropped, and an action saved before it existed keeps its default. A stage
+      // that's gone is dropped too, and with none left a run does every stage.
       name: 'koharu-shortcuts',
-      partialize: (state) => ({ shortcuts: state.shortcuts }),
+      partialize: (state) => ({
+        shortcuts: state.shortcuts,
+        processingStages: state.processingStages,
+      }),
       merge: (persisted, current) => {
-        const saved = (persisted as Partial<Pick<KoharuStore, 'shortcuts'>> | undefined)?.shortcuts
+        const saved = persisted as
+          | Partial<Pick<KoharuStore, 'shortcuts' | 'processingStages'>>
+          | undefined
         const shortcuts = { ...current.shortcuts }
         for (const action of Object.keys(shortcuts) as ShortcutAction[]) {
-          if (typeof saved?.[action] === 'string') shortcuts[action] = saved[action]
+          if (typeof saved?.shortcuts?.[action] === 'string') {
+            shortcuts[action] = saved.shortcuts[action]
+          }
         }
-        return { ...current, shortcuts }
+        const stages = Array.isArray(saved?.processingStages) ? saved.processingStages : []
+        const processingStages = pipelineStages.filter((stage) => stages.includes(stage))
+        return {
+          ...current,
+          shortcuts,
+          processingStages:
+            processingStages.length > 0 ? processingStages : current.processingStages,
+        }
       },
     },
   ),

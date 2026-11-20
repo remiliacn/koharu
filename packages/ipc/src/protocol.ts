@@ -223,6 +223,18 @@ export type Created =
   | { kind: 'page'; id: PageId; label: string | null }
   | { kind: 'layer'; id: LayerId; label: string | null }
 
+export type DataFolder = {
+  /**  Where this run keeps Koharu's data. */
+  current: string
+  /**
+   *  The folder Settings chose, which the next start uses; `None` for the
+   *  default.
+   */
+  chosen: string | null
+  /**  Whether the next start keeps it elsewhere than this run does. */
+  restart: boolean
+}
+
 /**  The detectors, by id in the section and by name. */
 export type Detector = 'koharu-layout-highres'
 
@@ -1045,6 +1057,11 @@ export const commands = {
   /** Picks where the open project's pages go, and writes them there: `pages`, or every page when it's empty. `labels` names a PSD's layers the scene names nothing, in the interface's language. */
   export: (format: ExportFormat, labels: Labels, pages: PageId[]) =>
     invoke<null>('export', { format, labels, pages }, { headers: headers() }),
+  getDataFolder: () => invoke<DataFolder>('get_data_folder', {}, { headers: headers() }),
+  /** Picks a folder for Koharu's data and keeps it for the next start, once Koharu can write in it; a cancelled pick changes nothing. */
+  chooseDataFolder: () => invoke<DataFolder>('choose_data_folder', {}, { headers: headers() }),
+  /** Puts Koharu's data back in the default folder from the next start. */
+  resetDataFolder: () => invoke<DataFolder>('reset_data_folder', {}, { headers: headers() }),
   /** The canvas element's rectangle, in CSS pixels from the window's corner, and the page's `devicePixelRatio`, physical pixels to a CSS pixel. */
   setViewport: (x: number, y: number, width: number, height: number, scale: number) =>
     invoke<null>('set_viewport', { x, y, width, height, scale }, { headers: headers() }),

@@ -331,18 +331,26 @@ fn outline(
     let mut body = close(&shape, Norm::LInf, radius as u8);
     fill_holes(&mut body);
     let distance = euclidean_squared_distance_transform(&shape);
+    let near = |pixel: [u8; 3], color: [u8; 3]| {
+        (0..3).all(|at| pixel[at].abs_diff(color[at]) <= OUTLINE_TOLERANCE)
+    };
     let mut rings: Vec<Vec<[u8; 3]>> = vec![Vec::new(); far as usize + 3];
     for (x, y, squared) in distance.enumerate_pixels() {
         let ring = squared.0[0].sqrt().ceil() as usize;
-        if body.get_pixel(x, y).0[0] == 0 && (1..rings.len()).contains(&ring) {
-            rings[ring].push(page.get_pixel(x0 + x, y0 + y).0);
+        let pixel = page.get_pixel(x0 + x, y0 + y).0;
+        // The ink's colour is no band's: it is glyphs the mask missed, or
+        // art of the ink's colour the lettering runs over, which the ink
+        // split took with the glyphs. A fork addition: white lettering in a
+        // teal band, its column's end over white art, measured no outline.
+        if body.get_pixel(x, y).0[0] == 0
+            && (1..rings.len()).contains(&ring)
+            && ink.is_none_or(|ink| !near(pixel, ink))
+        {
+            rings[ring].push(pixel);
         }
     }
     let share = |ring: &[[u8; 3]], color: [u8; 3]| {
-        let near = ring
-            .iter()
-            .filter(|pixel| (0..3).all(|at| pixel[at].abs_diff(color[at]) <= OUTLINE_TOLERANCE))
-            .count();
+        let near = ring.iter().filter(|&&pixel| near(pixel, color)).count();
         near as f32 / ring.len().max(1) as f32
     };
     let band = rings.get(2).filter(|ring| ring.len() >= 16)?;
@@ -1118,5 +1126,35 @@ mod tests {
         // On white paper the band never ends.
         let on_paper = outline(&page(Rgb([255; 3])), &glyphs, [60, 60], 20.0, Some([0; 3]));
         assert_eq!(on_paper, None);
+    }
+
+    /// White glyphs in a teal band whose column runs over white art, which
+    /// meets the glyphs on the right and below: the art is the ink's colour,
+    /// so the band is read where it shows.
+    #[test]
+    fn art_of_the_ink_colour_beside_the_glyphs_isnt_the_band() {
+        let (slate, teal, white) = ([60, 80, 110], [53, 154, 132], [255; 3]);
+        let mut page = RgbImage::from_pixel(200, 200, Rgb(slate));
+        for (x, y) in (56..84).flat_map(|x| (56..114).map(move |y| (x, y))) {
+            page.put_pixel(x, y, Rgb(teal));
+        }
+        for (x, y) in (0..200).flat_map(|x| (0..200).map(move |y| (x, y))) {
+            if (x >= 80 && y >= 60) || y >= 110 {
+                page.put_pixel(x, y, Rgb(white));
+            }
+        }
+        for (x, y) in (60..80).flat_map(|x| (60..80).chain(90..110).map(move |y| (x, y))) {
+            page.put_pixel(x, y, Rgb(white));
+        }
+        let glyphs = GrayImage::from_fn(20, 50, |_, y| {
+            Luma([if (20..30).contains(&y) { 0 } else { 255 }])
+        });
+        assert_eq!(
+            outline(&page, &glyphs, [60, 60], 20.0, Some(white)),
+            Some(Outline {
+                color: teal,
+                width: 4.0,
+            })
+        );
     }
 }

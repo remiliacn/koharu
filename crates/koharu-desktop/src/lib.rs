@@ -98,12 +98,27 @@ pub fn run(context: tauri::Context<CefRuntime>) -> Result<()> {
         })
         // A profile apart from the installed app's, which pins remote
         // debugging off in its local state on every launch.
-        .root_cache_path(
-            dirs::cache_dir()
+        .root_cache_path(match koharu_runtime::chosen() {
+            Some(folder) => folder.join("cef-debug"),
+            None => dirs::cache_dir()
                 .context("the user's cache directory is unknown")?
                 .join(&context.config().identifier)
                 .join("cef-debug"),
-        );
+        });
+    // The browser's profile goes in the folder the user chose for Koharu's
+    // data too, a fork addition; otherwise where the runtime puts it.
+    #[cfg(not(debug_assertions))]
+    let cef = match koharu_runtime::chosen() {
+        Some(folder) => cef.root_cache_path(folder.join("cef")),
+        None => cef,
+    };
+    let logs = match koharu_runtime::chosen() {
+        Some(folder) => TargetKind::Folder {
+            path: folder.join("logs"),
+            file_name: None,
+        },
+        None => TargetKind::LogDir { file_name: None },
+    };
 
     tauri::Builder::<CefRuntime>::new()
         .runtime(cef)
@@ -111,7 +126,7 @@ pub fn run(context: tauri::Context<CefRuntime>) -> Result<()> {
             tauri_plugin_log::Builder::new()
                 .level(LevelFilter::Info)
                 .max_file_size(1_000_000)
-                .targets([Target::new(TargetKind::LogDir { file_name: None })])
+                .targets([Target::new(logs)])
                 .build(),
         )
         // Another build of Koharu, on another CEF profile.

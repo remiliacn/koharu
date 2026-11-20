@@ -5910,6 +5910,7 @@ dependencies = [
  "futures",
  "globset",
  "hf-hub",
+ "koharu-config",
  "koharu-diffusion-sys",
  "koharu-llama-sys",
  "koharu-torch-sys",

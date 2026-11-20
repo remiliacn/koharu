@@ -32,6 +32,7 @@ import {
   type CharStyle,
   type Direction,
   type FontFamily,
+  type Layer,
   type LayerId,
   type Text,
   type TextStyle,
@@ -113,15 +114,16 @@ export function TypePanel() {
   const fitted = typeof frame !== 'object' ? null : frame.box ? 'box' : 'path'
   const autoFit = typeof frame === 'object' && (frame.box ?? frame.path)?.fit === 'best'
 
-  /** Merges `patch` into each target's style, shown at once on the first. */
-  const apply = (patch: TextStyle) => {
+  /** Merges `patch`, or each target's own, into each target's style, shown at once on the first. */
+  const apply = (patches: TextStyle | ((layer: Layer) => TextStyle)) => {
     if (!current) return
+    const patch = typeof patches === 'function' ? patches(current) : patches
     setDraft({
       layer: current.id,
       style: { ...style, ...patch, chars: { ...chars, ...patch.chars } },
     })
     const request = ++sequence.current
-    void call(setStyle, targets, patch)
+    void call(setStyle, targets, patches)
       .catch(() => undefined)
       .finally(() => {
         if (sequence.current === request) setDraft(null)
@@ -346,9 +348,18 @@ export function TypePanel() {
             max={32}
             step={0.5}
             onValueChange={(next) => {
-              if (next !== null && next >= 0.5 && next <= 32) {
+              if (next === null || next < 0.5 || next > 32) return
+              if (typing) {
                 applyChars({ stroke_width: next, stroke: stroke ?? hexToRgba(WHITE) })
+                return
               }
+              // Each text keeps its own border colour, which differs between selected texts;
+              // one with none takes white.
+              apply((layer) => ({
+                chars: bordered(layer)
+                  ? { stroke_width: next }
+                  : { stroke_width: next, stroke: hexToRgba(WHITE) },
+              }))
             }}
           >
             <NumberFieldGroup>
@@ -395,6 +406,13 @@ const CHAR_KEYS: CharKey[] = [
   'stroke',
   'stroke_width',
 ]
+
+/** Whether some character of `layer`'s lettering has a border colour of its own. */
+export function bordered(layer: Layer): boolean {
+  const text = letteringOf(layer)
+  const { chars, mixed } = sharedChars(text ? [text] : [])
+  return mixed.includes('stroke') || (chars.stroke != null && chars.stroke[3] > 0)
+}
 
 /** What every character of `texts` shares, each span's marks over its text's style, and the values
  * they don't, which it leaves empty, as the canvas reports a typed selection's. */

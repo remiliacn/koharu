@@ -429,7 +429,8 @@
       "pipeline": "Pipeline",
       "providers": "Providers",
       "shortcuts": "Shortcuts",
-      "typesetting": "Renderer"
+      "typesetting": "Renderer",
+      "storage": "Storage"
     },
     "title": "Settings",
     "typesetting": {
@@ -444,6 +445,19 @@
       "loadingFonts": "Loading fonts…",
       "removeFamily": "Remove {{family}}",
       "title": "Renderer"
+    },
+    "storage": {
+      "title": "Storage",
+      "description": "Where Koharu keeps its models, GPU runtime, fonts, projects, built-in browser cache, and logs. Settings and saved keys stay in your user folder.",
+      "folder": "Data folder",
+      "inUse": "In use",
+      "inUseDescription": "Choose a folder on another drive to keep Koharu's data off the system drive.",
+      "choose": "Choose folder…",
+      "useDefault": "Use default",
+      "default": "the default folder",
+      "restartTitle": "Restart to switch",
+      "restartDescription": "After a restart Koharu keeps its data in {{folder}}. Nothing is moved: models download there again, and the old folder stays until you delete it.",
+      "restart": "Restart Koharu"
     }
   },
   "start": {

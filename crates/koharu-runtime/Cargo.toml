@@ -20,6 +20,7 @@ fs-err = { workspace = true }
 futures = { workspace = true }
 globset = { workspace = true }
 hf-hub = { workspace = true }
+koharu-config = { workspace = true }
 koharu-diffusion-sys = { workspace = true }
 koharu-llama-sys = { workspace = true }
 koharu-torch-sys = { workspace = true }

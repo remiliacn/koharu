@@ -1,6 +1,17 @@
 'use client'
 
-import { ArrowLeft, Cpu, Keyboard, KeyRound, Monitor, Moon, Palette, Sun, Type } from 'lucide-react'
+import {
+  ArrowLeft,
+  Cpu,
+  HardDrive,
+  Keyboard,
+  KeyRound,
+  Monitor,
+  Moon,
+  Palette,
+  Sun,
+  Type,
+} from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -12,6 +23,7 @@ import {
   PreferenceSection,
 } from '@/components/preferences/PreferenceFields'
 import { ProviderPreferences } from '@/components/preferences/ProviderPreferences'
+import { StoragePreferences } from '@/components/preferences/StoragePreferences'
 import { TypesettingPreferences } from '@/components/preferences/TypesettingPreferences'
 import { refreshModels, refreshPreferences, savePreferences } from '@/lib/backend'
 import { supportedLanguages } from '@/lib/i18n'
@@ -34,6 +46,7 @@ const tabs = [
   ['providers', KeyRound],
   ['typesetting', Type],
   ['shortcuts', Keyboard],
+  ['storage', HardDrive],
 ] as const
 type Tab = (typeof tabs)[number][0]
 
@@ -129,7 +142,10 @@ export function SettingsPage() {
           <div className='mx-auto w-full max-w-4xl px-10 py-10'>
             {tab === 'appearance' && <AppearancePreferences />}
             {tab === 'shortcuts' && <ShortcutPreferences />}
-            {tab !== 'appearance' && tab !== 'shortcuts' && !draft && <LoadingPreferences />}
+            {tab === 'storage' && <StoragePreferences />}
+            {tab !== 'appearance' && tab !== 'shortcuts' && tab !== 'storage' && !draft && (
+              <LoadingPreferences />
+            )}
             {tab === 'pipeline' && draft && (
               <PipelinePreferences
                 value={draft.pipeline}

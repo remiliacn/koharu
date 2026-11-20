@@ -12,6 +12,7 @@ mod preferences;
 mod processing;
 mod project;
 mod scene;
+mod storage;
 
 use serde::Serialize;
 use specta::{
@@ -88,6 +89,9 @@ pub fn handler() -> impl Fn(Invoke<CefRuntime>) -> bool + Send + Sync + 'static 
         fonts::get_font_preview,
         import::import,
         export::export,
+        storage::get_data_folder,
+        storage::choose_data_folder,
+        storage::reset_data_folder,
         canvas::set_viewport,
         canvas::set_tool,
         canvas::set_brush,
@@ -161,6 +165,9 @@ pub fn bindings(types: &mut Types) -> Vec<Function> {
         fonts::get_font_preview,
         import::import,
         export::export,
+        storage::get_data_folder,
+        storage::choose_data_folder,
+        storage::reset_data_folder,
         canvas::set_viewport,
         canvas::set_tool,
         canvas::set_brush,

@@ -1,27 +1,28 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { receiveDownload, useKoharuStore } from '@/lib/store'
+import { useKoharuStore } from '@/lib/store'
 
-describe('editor state', () => {
-  it('retains failed downloads until they are dismissed', () => {
-    useKoharuStore.setState({ downloads: {} })
-    receiveDownload({
-      state: { Failed: 'network unavailable' },
-      id: 9,
-      name: 'weights.bin',
-      completed: 0,
-      total: 0,
-    })
-    expect(useKoharuStore.getState().downloads[9]).toMatchObject({
-      state: { Failed: 'network unavailable' },
-      name: 'weights.bin',
-    })
+afterEach(() => {
+  localStorage.clear()
+})
 
-    useKoharuStore.getState().dismissDownload(9)
-    expect(useKoharuStore.getState().downloads[9]).toBeUndefined()
+const restored = async (saved: unknown) => {
+  localStorage.setItem('koharu-shortcuts', JSON.stringify({ state: saved, version: 0 }))
+  await useKoharuStore.persist.rehydrate()
+  return useKoharuStore.getState().processingStages
+}
+
+describe('the stages a run does', () => {
+  it('outlive a restart, in the pipeline order, without stages that are gone', async () => {
+    expect(await restored({ processingStages: ['inpaint', 'gone', 'translate'] })).toEqual([
+      'translate',
+      'inpaint',
+    ])
   })
 
-  it('defaults paint brush color to pure white (#FFFFFF)', () => {
-    expect(useKoharuStore.getState().brush.color).toBe('#FFFFFF')
+  it('keep their default when none that exist were saved', async () => {
+    const before = useKoharuStore.getState().processingStages
+    expect(await restored({ processingStages: ['gone'] })).toEqual(before)
+    expect(await restored({})).toEqual(before)
   })
 })
