@@ -1,22 +1,142 @@
-//! Detection in an area the marquee or the lasso marked, for lettering the
-//! page-wide pass missed: the detector reads the area's rectangle alone,
-//! which it scales up as it scales a page, so small lettering there gets the
-//! resolution a whole page would. The area's blocks take the place of the
-//! ones there, as a page's take the page's, and go into the panel or balloon
-//! they're in; the page's other layers stay.
+//! Detection in the empty text boxes drawn with the Type tool, for lettering
+//! the page-wide pass missed, as the fork's drawn text boxes were read before
+//! 0.85.2: the detector reads each box alone, with context around it, which
+//! it scales up as it scales a page, so small lettering there gets the
+//! resolution a whole page would. What it finds in a box becomes one block,
+//! framed by the box, in place of the box and the blocks there, in the panel
+//! or balloon holding it; the page's other layers stay.
 
 use std::collections::HashMap;
 
 use image::{DynamicImage, Rgb, RgbImage, imageops};
-use koharu_ml::koharu_layout_highres::{Layout, Mask};
-use koharu_scene::{Content, Layer, LayerId, Op, Rect};
+use koharu_ml::koharu_layout_highres::{Kind, Layout, Lettering, Mask};
+use koharu_scene::{Content, Frame, Layer, LayerId, Op, PageId, Project, Rect};
 use kurbo::{BezPath, Point, Shape as _};
 
 use super::{
-    layers::{Place, claimed},
+    layers::{self, Found, Place, claimed},
     translated,
 };
 use crate::Area;
+
+/// The empty text boxes on `page` of `project`, a `width` by `height` page,
+/// each with the area it covers: box text with nothing typed in it, which the
+/// Type tool adds on a drag. One that's locked, or in a locked layer, stays.
+pub(super) fn drawn(
+    project: &Project,
+    page: PageId,
+    width: u32,
+    height: u32,
+) -> Vec<(LayerId, Area)> {
+    fn walk(layers: &[Layer], out: &mut Vec<(LayerId, kurbo::Rect)>) {
+        for layer in layers.iter().filter(|layer| !layer.locked) {
+            if let Content::Text(text) = &layer.content
+                && matches!(text.frame, Frame::Box { .. })
+                && text.content.text().trim().is_empty()
+                && let Some(bounds) = text.bounds()
+            {
+                out.push((layer.id, bounds));
+            }
+            walk(&layer.children, out);
+        }
+    }
+    let mut boxes = Vec::new();
+    if let Ok(page) = project.page(page) {
+        walk(&page.layers, &mut boxes);
+    }
+    boxes
+        .into_iter()
+        .filter_map(|(layer, bounds)| {
+            let rect = Rect::covering(bounds, width, height)?;
+            let pixels = vec![u8::MAX; rect.width as usize * rect.height as usize];
+            Some((layer, Area { rect, pixels }))
+        })
+        .collect()
+}
+
+/// The `lettering` found in a box covering `rect` as one, framed by the box,
+/// its masks joined, as a drawn box took all it held; `None` when it held
+/// none.
+pub(super) fn merged(lettering: Vec<Lettering>, rect: Rect) -> Option<Lettering> {
+    let first = lettering.first()?;
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for mask in lettering.iter().map(|lettering| &lettering.mask) {
+        (x0, y0) = (x0.min(mask.x), y0.min(mask.y));
+        (x1, y1) = (x1.max(mask.x + mask.width), y1.max(mask.y + mask.height));
+    }
+    let (width, height) = (x1 - x0, y1 - y0);
+    let mut pixels = vec![0; (width * height) as usize];
+    for mask in lettering.iter().map(|lettering| &lettering.mask) {
+        for (at, &value) in mask.pixels.iter().enumerate() {
+            let (x, y) = (
+                mask.x + at as u32 % mask.width - x0,
+                mask.y + at as u32 / mask.width - y0,
+            );
+            let pixel = &mut pixels[(y * width + x) as usize];
+            *pixel = (*pixel).max(value);
+        }
+    }
+    let kind = match lettering
+        .iter()
+        .any(|lettering| lettering.kind == Kind::Text)
+    {
+        true => Kind::Text,
+        false => first.kind,
+    };
+    Some(Lettering {
+        kind,
+        score: lettering
+            .iter()
+            .map(|lettering| lettering.score)
+            .fold(0.0, f32::max),
+        bbox: [
+            rect.x as f32,
+            rect.y as f32,
+            (rect.x + rect.width as i32) as f32,
+            (rect.y + rect.height as i32) as f32,
+        ],
+        mask: Mask {
+            x: x0,
+            y: y0,
+            width,
+            height,
+            pixels,
+        },
+        bubble: None,
+        panel: None,
+        room: None,
+    })
+}
+
+/// The ops turning each drawn box into a block from the lettering found in
+/// it, `found`'s in the order of `boxes`: the blocks in the boxes go, unless
+/// locked or translated, each new block goes into the panel or balloon
+/// holding its box, and the box goes. A box whose middle a block that stays
+/// holds stays too: its lettering is that block's.
+pub(super) fn adopted(
+    layers: &[Layer],
+    found: &Found,
+    boxes: &[(LayerId, Area)],
+    page: PageId,
+    model: &str,
+) -> anyhow::Result<Vec<Op>> {
+    let areas: Vec<(&Area, [f32; 4])> = boxes
+        .iter()
+        .zip(&found.layout.lettering)
+        .map(|((_, area), lettering)| (area, lettering.bbox))
+        .collect();
+    let (removed, places, kept) = changes(layers, &areas);
+    let mut ops = layers::placed(found, page, model, &places, &kept)?;
+    for ((text, _), lettering) in boxes.iter().zip(&found.layout.lettering) {
+        if !claimed(lettering.bbox, &kept) {
+            ops.push(Op::RemoveLayer {
+                layer: (*text).into(),
+            });
+        }
+    }
+    ops.extend(removed);
+    Ok(ops)
+}
 
 /// What the detector reads past an area on every side: a quarter of its
 /// longer side, at least 32 pixels, as the fork's drawn-box detection read.
@@ -138,24 +258,24 @@ fn cut(mask: &Mask, dx: i64, dy: i64, crop: Rect) -> Option<Mask> {
     })
 }
 
-/// What an area's detection changes on a page with `layers`: the unlocked
-/// blocks whose centre the area holds go, and each of the `found` lettering
-/// boxes, in reading order, goes at the end of the innermost unlocked panel
+/// What the drawn boxes' detection changes on a page with `layers`: the
+/// unlocked blocks whose centre one of the `boxes` holds go, and each box's
+/// lettering box, in order, goes at the end of the innermost unlocked panel
 /// or balloon holding its centre, else of the page. Also the boxes of the
 /// blocks that stay, which the new masks keep out of.
 pub(super) fn changes(
     layers: &[Layer],
-    area: &Area,
-    found: &[[f32; 4]],
+    boxes: &[(&Area, [f32; 4])],
 ) -> (Vec<Op>, Vec<Place>, Vec<[f32; 4]>) {
     let mut removed = Vec::new();
     let mut kept = Vec::new();
-    blocks(layers, area, false, &mut removed, &mut kept);
+    let inside = |point: Point| boxes.iter().any(|(area, _)| holds(area, point));
+    blocks(layers, &inside, false, &mut removed, &mut kept);
     // How many children each holder has once the removals are done.
     let mut counts = HashMap::<Option<LayerId>, usize>::new();
-    let places = found
+    let places = boxes
         .iter()
-        .map(|&bbox| {
+        .map(|&(_, bbox)| {
             let (parent, children) = holder(layers, centre(bbox), None);
             let count = counts.entry(parent).or_insert_with(|| {
                 children
@@ -183,12 +303,12 @@ pub(super) fn changes(
     (ops, places, kept)
 }
 
-/// The blocks among `layers` whose source's centre `area` holds into
+/// The blocks among `layers` whose source's centre is `inside` into
 /// `removed`, unless they or a layer they're in is locked or they're
 /// translated, and the boxes of the rest into `kept`.
 fn blocks(
     layers: &[Layer],
-    area: &Area,
+    inside: &dyn Fn(Point) -> bool,
     locked: bool,
     removed: &mut Vec<LayerId>,
     kept: &mut Vec<[f32; 4]>,
@@ -201,13 +321,13 @@ fn blocks(
                     continue;
                 };
                 let bbox = [bounds.x0, bounds.y0, bounds.x1, bounds.y1].map(|value| value as f32);
-                if !locked && !translated(layer) && holds(area, centre(bbox)) {
+                if !locked && !translated(layer) && inside(centre(bbox)) {
                     removed.push(layer.id);
                 } else {
                     kept.push(bbox);
                 }
             }
-            _ => blocks(&layer.children, area, locked, removed, kept),
+            _ => blocks(&layer.children, inside, locked, removed, kept),
         }
     }
 }
@@ -251,7 +371,7 @@ fn holds(area: &Area, point: Point) -> bool {
 mod tests {
     use koharu_ml::koharu_layout_highres::{Kind, Lettering, Mask};
     use koharu_scene::{Created, Edit, Session};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -402,7 +522,8 @@ mod tests {
         let project = session.project();
         let page = project.pages().next().expect("a page");
 
-        let (ops, places, kept) = changes(&page.layers, &left_half(), &[[20.0, 60.0, 30.0, 70.0]]);
+        let (ops, places, kept) =
+            changes(&page.layers, &[(&left_half(), [20.0, 60.0, 30.0, 70.0])]);
 
         let removed: Vec<_> = ops
             .iter()
@@ -417,6 +538,113 @@ mod tests {
         // After the locked block, which stays.
         assert_eq!(places[0].index, 1);
         assert_eq!(kept, [[30.0, 40.0, 40.0, 50.0], [70.0, 40.0, 80.0, 50.0]]);
+        Ok(())
+    }
+
+    /// An empty box drawn with the Type tool becomes a block, framed by the
+    /// box, from all the lettering found in it, in the balloon holding it, in
+    /// place of the block there; a box with text typed in it isn't read.
+    #[test]
+    fn an_empty_drawn_box_becomes_a_block_in_place_of_the_blocks_there() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut session = Session::create(dir.path().join("test.khr"))?;
+        let text = |x: f64, content: Value| {
+            json!({"kind": "text", "content": content,
+                "frame": {"box": {"bounds": {"x": 0.0, "y": 0.0, "width": 30.0, "height": 30.0}}},
+                "transform": [[1.0, 0.0, x], [0.0, 1.0, 30.0]]})
+        };
+        let ops = [
+            json!({"op": "add_page", "id": "$p", "index": 0, "size": {"width": 100, "height": 100}}),
+            json!({"op": "add_layer", "id": "$balloon", "page": "$p", "index": 0,
+                "layer": {"kind": "balloon", "outline": "M0 0L50 0L50 100L0 100Z"}}),
+            json!({"op": "add_layer", "page": "$p", "parent": "$balloon", "index": 0,
+            "layer": {"kind": "block", "source": {
+                "frame": {"box": {"bounds": {"x": 10.0, "y": 40.0, "width": 10.0, "height": 10.0}}},
+            }}}),
+            json!({"op": "add_layer", "page": "$p", "index": 1, "layer": text(5.0, json!([]))}),
+            json!({"op": "add_layer", "page": "$p", "index": 2,
+                "layer": text(60.0, json!([{"insert": "Hi"}]))}),
+        ];
+        let change = session.apply(Edit {
+            label: "test".to_owned(),
+            ops: ops
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<Result<_, _>>()?,
+        })?;
+        let id = |at: usize| match change.created.get(at) {
+            Some(Created::Layer { id, .. }) => Ok(*id),
+            _ => anyhow::bail!("no layer {at}"),
+        };
+        // The block brings its own parts, so the typed text comes last.
+        let (balloon, typed) = (id(1)?, id(change.created.len() - 1)?);
+        let project = session.project();
+        let page = project.pages().next().expect("a page");
+
+        let boxes = drawn(&project, page.id, 100, 100);
+        let [(_, area)] = &boxes[..] else {
+            panic!("one drawn box: {}", boxes.len());
+        };
+        assert_eq!(
+            area.rect,
+            Rect {
+                x: 5,
+                y: 30,
+                width: 30,
+                height: 30
+            }
+        );
+        let joined = merged(
+            vec![
+                lettering([12.0, 42.0, 18.0, 48.0]),
+                lettering([20.0, 50.0, 22.0, 52.0]),
+            ],
+            area.rect,
+        )
+        .expect("lettering");
+        assert_eq!(joined.bbox, [5.0, 30.0, 35.0, 60.0]);
+        assert_eq!(
+            (
+                joined.mask.x,
+                joined.mask.y,
+                joined.mask.width,
+                joined.mask.height
+            ),
+            (12, 42, 9, 9)
+        );
+        let layout = Layout {
+            width: 100,
+            height: 100,
+            lettering: vec![joined],
+            bubbles: Vec::new(),
+            panels: Vec::new(),
+        };
+        let pixels = RgbImage::new(100, 100);
+        let found = Found {
+            layout: &layout,
+            typography: &[None],
+            pixels: &pixels,
+        };
+        let ops = adopted(&page.layers, &found, &boxes, page.id, "test")?;
+        session.apply(Edit {
+            label: "detect".to_owned(),
+            ops,
+        })?;
+
+        let project = session.project();
+        let page = project.pages().next().expect("a page");
+        let ids: Vec<LayerId> = page.layers.iter().map(|layer| layer.id).collect();
+        assert_eq!(ids, [balloon, typed]);
+        let [block] = &page.layers[0].children[..] else {
+            panic!("one block in the balloon");
+        };
+        let Content::Block(block) = &block.content else {
+            panic!("a block");
+        };
+        assert_eq!(
+            block.source.bounds(),
+            Some(kurbo::Rect::new(5.0, 30.0, 35.0, 60.0))
+        );
         Ok(())
     }
 }

@@ -101,14 +101,8 @@ impl Plan {
                 }
             }
             Target::Area { page, area, prompt } => {
-                if stages.len() != 1
-                    || !stages
-                        .iter()
-                        .all(|stage| matches!(stage, Stage::Detect | Stage::Inpaint))
-                {
-                    return Err(Error::invalid(
-                        "an area takes detection or inpainting alone",
-                    ));
+                if stages.iter().ne([Stage::Inpaint].iter()) {
+                    return Err(Error::invalid("an area takes inpainting only"));
                 }
                 project.page(*page)?;
                 if area.pixels.len() != area.rect.width as usize * area.rect.height as usize {
@@ -255,8 +249,6 @@ mod tests {
         };
         assert!(Plan::new(&project, &area, &stages(&[Stage::Translate])).is_err());
         assert!(Plan::new(&project, &area, &stages(&[Stage::Inpaint])).is_ok());
-        assert!(Plan::new(&project, &area, &stages(&[Stage::Detect])).is_ok());
-        assert!(Plan::new(&project, &area, &stages(&[Stage::Detect, Stage::Inpaint])).is_err());
         Ok(())
     }
 

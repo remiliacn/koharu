@@ -1,6 +1,6 @@
 'use client'
 
-import { ScanSearch, Sparkles, X } from 'lucide-react'
+import { Sparkles, X } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -28,8 +28,7 @@ const TOOLS: CanvasTool[] = ['marquee', 'lasso']
  * draw there, Generate, and Deselect. The model is the fill's own, saved as
  * `[pipeline.inpainter] fill`, apart from the one that cleans pages; Generate fills the area with
  * it after the prompt, or with the inpainter's own prompt when it's empty. LaMa takes no prompt,
- * so with it the bar has none. Detect Text detects in the area alone, for lettering the page's
- * detection missed. */
+ * so with it the bar has none. */
 export function FillBar() {
   const { t } = useTranslation()
   const area = useKoharuStore((state) => state.area)
@@ -96,16 +95,6 @@ export function FillBar() {
       <Button type='button' size='sm' className='h-7 text-[11px]' onClick={generate}>
         <Sparkles />
         {t('fill.generate')}
-      </Button>
-      <Button
-        type='button'
-        variant='outline'
-        size='sm'
-        className='h-7 text-[11px]'
-        onClick={() => dispatch(commands.detectArea)}
-      >
-        <ScanSearch />
-        {t('fill.detect')}
       </Button>
       <Tooltip>
         <TooltipTrigger

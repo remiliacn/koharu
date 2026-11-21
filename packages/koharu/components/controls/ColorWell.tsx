@@ -6,6 +6,7 @@ import { HexColorInput, HexColorPicker } from 'react-colorful'
 import { useTranslation } from 'react-i18next'
 
 import { useColorSampling } from '@/components/controls/ColorSampling'
+import { useKoharuStore } from '@/lib/store'
 import { Button } from '@koharu/ui/components/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@koharu/ui/components/popover'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@koharu/ui/components/tooltip'
@@ -36,6 +37,12 @@ export function ColorWell(props: ColorWellProps) {
   const [open, setOpen] = useState(false)
   const sampling = useColorSampling()
   const accessibleLabel = label ?? t('colorPicker.brushColor')
+  // A colour picked on the canvas closes the palette, whichever well or tool asked for it: a press
+  // on the native canvas isn't a press outside the popover to the webview, so it stayed open.
+  const picked = useKoharuStore((state) => state.picked)
+  useEffect(() => {
+    if (picked) setOpen(false)
+  }, [picked])
 
   useEffect(() => {
     if (value === null) {

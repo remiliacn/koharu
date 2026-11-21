@@ -34,6 +34,13 @@ pub enum Inpainter {
     RoremMixed,
 }
 
+impl Inpainter {
+    /// Whether stable-diffusion.cpp runs it, rather than libtorch.
+    pub(super) fn diffusion(self) -> bool {
+        !matches!(self, Self::Lama)
+    }
+}
+
 /// An inpainter, loaded.
 pub(super) type Model = Box<dyn Inpaint + Send>;
 

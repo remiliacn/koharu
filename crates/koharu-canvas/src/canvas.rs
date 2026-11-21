@@ -14,7 +14,7 @@ use anyhow::Context as _;
 use cursor_icon::CursorIcon;
 use image::RgbaImage;
 use koharu_renderer::{Drawing, Gpu, Label, Renderer};
-use koharu_scene::{CharStyle, Content, Layer, LayerId, PageId, Rgba, Session, Text};
+use koharu_scene::{CharStyle, Content, Edit, Frame, Layer, LayerId, PageId, Rgba, Session, Text};
 use kurbo::{Affine, Point, Rect, Shape as _, Size, TranslateScale, Vec2};
 use parking_lot::Mutex;
 use ui_events::keyboard::{Code, Key, KeyState, KeyboardEvent, NamedKey};
@@ -690,6 +690,19 @@ impl Canvas {
         // nothing selected; committing adds it, selected.
         if let Gesture::Draft(draft) = &active.gesture {
             let text = draft.text(&cx);
+            // A dragged box is added at once, empty and selected, for Detect
+            // to read the lettering under it, as the fork's drawn text boxes
+            // were before 0.85.2; a click or a press on it types. A fork
+            // divergence: upstream types into the box and adds it on commit.
+            if matches!(text.frame, Frame::Box { .. }) {
+                let (id, add) = tools::added(cx.snapshot.page(), Content::Text(Box::new(text)));
+                effects.push(Effect::Edit(Edit {
+                    label: "add_text".to_owned(),
+                    ops: vec![add],
+                }));
+                effects.push(Effect::Selection(vec![id]));
+                return Ok(effects);
+            }
             self.typing = Some(Typing::new_text(&self.renderer, text)?);
             effects.push(Effect::Selection(Vec::new()));
             return Ok(effects);

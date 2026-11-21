@@ -91,9 +91,12 @@ export function LayersPanel() {
     selected.length === 1 ? (selected[0] ?? null) : null,
   )
   const anchor = useRef<LayerId | null>(null)
+  // A Ctrl-click only changes the selection: it opens no row, even when it leaves one layer.
+  const quiet = useRef(false)
 
   useEffect(() => {
-    setExpandedLayer(selected.length === 1 ? (selected[0] ?? null) : null)
+    setExpandedLayer(selected.length === 1 && !quiet.current ? (selected[0] ?? null) : null)
+    quiet.current = false
   }, [selected])
 
   const rows = useMemo(() => (page ? displayedLayers(page.layers) : []), [page])
@@ -177,6 +180,7 @@ export function LayersPanel() {
       setExpandedLayer(layer)
       return
     }
+    quiet.current = additive
     const order = rows.map((row) => row.placed.layer.id)
     const anchorIndex = anchor.current ? order.indexOf(anchor.current) : -1
     if (range && anchorIndex >= 0) {

@@ -164,12 +164,15 @@ impl Lettering {
             .map(|(length, _)| *length)
             .expect("the profile's peak is a run") as f32;
 
-        let (ink_color, paper_color) = match color_segment(&crop, 60, 8, 1, 4) {
-            Ok(Some(segments)) => {
-                let commonest = |wanted: bool| {
+        let enclosed = enclosed(&ink);
+        let held = |x: u32, y: u32| enclosed.get_pixel(x + 1, y + 1).0[0] != 0;
+        let segments = color_segment(&crop, 60, 8, 1, 4).ok().flatten();
+        let (ink_color, paper_color, held_color) = match &segments {
+            Some(segments) => {
+                let commonest = |wanted: &dyn Fn(u32, u32, bool) -> bool| {
                     let mut counts = vec![0u32; segments.colors.len()];
                     for (x, y, index) in segments.indices.enumerate_pixels() {
-                        if inside(x, y) && (ink.get_pixel(x, y).0[0] != 0) == wanted {
+                        if inside(x, y) && wanted(x, y, ink.get_pixel(x, y).0[0] != 0) {
                             counts[usize::from(index.0[0])] += 1;
                         }
                     }
@@ -177,20 +180,27 @@ impl Lettering {
                         counts.iter().enumerate().max_by_key(|&(_, count)| count)?;
                     (count > 0).then(|| segments.colors[index])
                 };
-                (commonest(true), commonest(false))
+                (
+                    commonest(&|_, _, glyph| glyph),
+                    commonest(&|_, _, glyph| !glyph),
+                    commonest(&|x, y, glyph| !glyph && held(x, y)),
+                )
             }
-            _ => (None, None),
+            None => (None, None, None),
         };
 
         let measured = outline(page, &ink, [left, top], size, ink_color);
         // Lettering filled in one colour and outlined in a lighter one, on
         // darker paper, splits with its fill on the paper's side and its
-        // outline as the ink: its fill is then the block's paper, enclosed by
-        // the outline and unlike the paper around. A fork addition: a blue
-        // fill in a white outline on a dark panel measured as white ink.
-        let (ink_color, paper_color, outline) = match (measured, ink_color, paper_color) {
+        // outline as the ink: its fill is then the colour the glyphs enclose,
+        // nearly all of it, and unlike the paper around. A fork addition: a
+        // blue fill in a white outline on a dark panel measured as white ink.
+        // The block's commonest paper colour is the fill only where the fill
+        // outweighs the paper between the glyphs; past thin strokes it's the
+        // paper.
+        let (ink_color, paper_color, outlined) = match (measured, ink_color, held_color) {
             (None, Some(band), Some(fill)) => {
-                match outlined_fill(page, &ink, [left, top], &block, size, fill) {
+                match outlined_fill(page, &ink, &enclosed, [left, top], &block, size, fill) {
                     Some(around) => (
                         Some(fill),
                         Some(around),
@@ -203,6 +213,24 @@ impl Lettering {
                 }
             }
             _ => (ink_color, paper_color, measured),
+        };
+        // Lettering drawn in layers, a fill inside a light outline and that
+        // in a thin dark one, splits on one of the outlines, which then
+        // measures as the ink. A fork addition: purple and pink in white and
+        // black on pink paper measured as black or white ink.
+        let layered = around(page, &ink, [left, top], &block, size)
+            .and_then(|around| innermost(&crop, &enclosed, &inside, around))
+            // Outlines are white, black or grey; an ink in colour is a fill
+            // already, which may run from one colour to another, as a sound
+            // effect's pink fades to black.
+            .filter(|(fill, _)| ink_color.is_some_and(|ink| neutral(ink) && unlike(*fill, ink)))
+            .and_then(|(fill, pixels)| {
+                let band = outline(page, &pixels, [left, top], size, Some(fill))?;
+                Some((fill, band))
+            });
+        let (ink_color, outline) = match layered {
+            Some((fill, band)) => (Some(fill), Some(band)),
+            None => (ink_color, outlined),
         };
 
         Some(Typography {
@@ -221,22 +249,9 @@ impl Lettering {
 /// some channel, as the outline's band must be unlike the ink.
 const FILL_CONTRAST: u8 = 80;
 
-/// The paper around `block` when `glyphs`, whose corner is `corner` on
-/// `page`, are an outline whose fill the ink split put with the paper: the
-/// pixels of colour `fill` under the block lie, nearly all of them, in what
-/// the glyphs enclose, and the paper in a band around the block is unlike
-/// it. Black lettering on white paper encloses its counters, but the paper
-/// between its glyphs isn't enclosed, and the paper around is the same white.
-fn outlined_fill(
-    page: &RgbImage,
-    glyphs: &GrayImage,
-    [left, top]: [u32; 2],
-    block: &Mask,
-    size: f32,
-    fill: [u8; 3],
-) -> Option<[u8; 3]> {
-    let near = |pixel: [u8; 3]| (0..3).all(|at| pixel[at].abs_diff(fill[at]) <= OUTLINE_TOLERANCE);
-    // A border, so the paper at the crop's edge is outside, not a hole.
+/// `glyphs` with the holes they enclose filled, a pixel wider on each side,
+/// so the paper at the crop's edge is outside, not a hole.
+fn enclosed(glyphs: &GrayImage) -> GrayImage {
     let mut enclosed = GrayImage::new(glyphs.width() + 2, glyphs.height() + 2);
     for (x, y, pixel) in glyphs.enumerate_pixels() {
         if pixel.0[0] != 0 {
@@ -244,6 +259,26 @@ fn outlined_fill(
         }
     }
     fill_holes(&mut enclosed);
+    enclosed
+}
+
+/// The paper around `block` when `glyphs`, whose corner is `corner` on
+/// `page`, are an outline whose fill the ink split put with the paper: the
+/// pixels of colour `fill` under the block lie, nearly all of them, in what
+/// the glyphs enclose (`enclosed`), and the paper in a band around the block
+/// is unlike it. Black lettering on white paper encloses its counters, but
+/// the paper between its glyphs isn't enclosed, and the paper around is the
+/// same white.
+fn outlined_fill(
+    page: &RgbImage,
+    glyphs: &GrayImage,
+    enclosed: &GrayImage,
+    [left, top]: [u32; 2],
+    block: &Mask,
+    size: f32,
+    fill: [u8; 3],
+) -> Option<[u8; 3]> {
+    let near = |pixel: [u8; 3]| (0..3).all(|at| pixel[at].abs_diff(fill[at]) <= OUTLINE_TOLERANCE);
     let (mut filled, mut held) = (0usize, 0usize);
     for (x, y, pixel) in glyphs.enumerate_pixels() {
         let (page_x, page_y) = (left + x, top + y);
@@ -258,6 +293,34 @@ fn outlined_fill(
     if filled < 16 || (held as f32) < 0.8 * filled as f32 {
         return None;
     }
+    let around = around(page, glyphs, [left, top], block, size)?;
+    unlike(around, fill).then_some(around)
+}
+
+/// Whether `color`'s channels lie within 48 of each other: white, black or
+/// grey.
+fn neutral(color: [u8; 3]) -> bool {
+    color
+        .iter()
+        .max()
+        .zip(color.iter().min())
+        .is_some_and(|(high, low)| high - low <= 48)
+}
+
+/// Whether `a` and `b` differ by more than `FILL_CONTRAST` in some channel.
+fn unlike(a: [u8; 3], b: [u8; 3]) -> bool {
+    (0..3).any(|at| a[at].abs_diff(b[at]) > FILL_CONTRAST)
+}
+
+/// The paper in a band around `block`, past `glyphs`, whose corner is
+/// `corner` on `page`: each channel's median.
+fn around(
+    page: &RgbImage,
+    glyphs: &GrayImage,
+    [left, top]: [u32; 2],
+    block: &Mask,
+    size: f32,
+) -> Option<[u8; 3]> {
     let margin = (0.25 * size).ceil().max(4.0) as u32;
     let (x0, y0) = (
         block.x.saturating_sub(margin),
@@ -281,13 +344,90 @@ fn outlined_fill(
     if channels[0].len() < 16 {
         return None;
     }
-    let around: [u8; 3] = std::array::from_fn(|at| {
+    Some(std::array::from_fn(|at| {
         channels[at].sort_unstable();
         channels[at][channels[at].len() / 2]
+    }))
+}
+
+/// The fill of lettering drawn in layers, and the pixels of that colour,
+/// from `crop`'s colours within what the glyphs enclose (`enclosed`, a pixel
+/// wider on each side) under the block (`inside`): the colour the most
+/// changes of colour away from the outside, as a fill lies inside its
+/// outline, and that inside another. Counters, which show the paper's colour
+/// `paper` deeper still, and colours of under a sixth of the lettering, such
+/// as the anti-aliased edges between layers, don't count.
+fn innermost(
+    crop: &RgbImage,
+    enclosed: &GrayImage,
+    inside: &dyn Fn(u32, u32) -> bool,
+    paper: [u8; 3],
+) -> Option<([u8; 3], GrayImage)> {
+    // Finer than the ink split's, which joins a white outline to pink paper.
+    let segments = color_segment(crop, 40, 10, 1, 6).ok().flatten()?;
+    let (width, height) = segments.indices.dimensions();
+    let colors = &segments.colors;
+    let lettering = |x: u32, y: u32| inside(x, y) && enclosed.get_pixel(x + 1, y + 1).0[0] != 0;
+    let segment = |x: u32, y: u32| usize::from(segments.indices.get_pixel(x, y).0[0]);
+    // Each pixel's count of changes of colour from the outside, the fewest
+    // over any path: a breadth-first search that queues a step within a
+    // colour first.
+    let at = |x: u32, y: u32| (y * width + x) as usize;
+    let mut changes = vec![u32::MAX; (width * height) as usize];
+    let mut queue = std::collections::VecDeque::new();
+    for (x, y) in (0..height).flat_map(|y| (0..width).map(move |x| (x, y))) {
+        if !lettering(x, y) {
+            changes[at(x, y)] = 0;
+            queue.push_back((x, y));
+        }
+    }
+    while let Some((x, y)) = queue.pop_front() {
+        let here = changes[at(x, y)];
+        let own = lettering(x, y).then(|| segment(x, y));
+        let neighbours = [
+            x.checked_sub(1).map(|x| (x, y)),
+            (x + 1 < width).then_some((x + 1, y)),
+            y.checked_sub(1).map(|y| (x, y)),
+            (y + 1 < height).then_some((x, y + 1)),
+        ];
+        for (nx, ny) in neighbours.into_iter().flatten() {
+            if !lettering(nx, ny) {
+                continue;
+            }
+            let step = u32::from(own != Some(segment(nx, ny)));
+            if here + step < changes[at(nx, ny)] {
+                changes[at(nx, ny)] = here + step;
+                if step == 0 {
+                    queue.push_front((nx, ny));
+                } else {
+                    queue.push_back((nx, ny));
+                }
+            }
+        }
+    }
+    let mut levels = vec![Vec::new(); colors.len()];
+    for (x, y) in (0..height).flat_map(|y| (0..width).map(move |x| (x, y))) {
+        if lettering(x, y) {
+            levels[segment(x, y)].push(changes[at(x, y)]);
+        }
+    }
+    let total: usize = levels.iter().map(Vec::len).sum();
+    let near_paper = |color: [u8; 3]| (0..3).all(|at| color[at].abs_diff(paper[at]) <= 24);
+    let fill = (0..colors.len())
+        .filter(|&at| 6 * levels[at].len() >= total && !near_paper(colors[at]))
+        .max_by_key(|&at| {
+            let level = &mut levels[at].clone();
+            level.sort_unstable();
+            level[level.len() / 2]
+        })?;
+    let pixels = GrayImage::from_fn(width, height, |x, y| {
+        Luma([if lettering(x, y) && segment(x, y) == fill {
+            255
+        } else {
+            0
+        }])
     });
-    (0..3)
-        .any(|at| around[at].abs_diff(fill[at]) > FILL_CONTRAST)
-        .then_some(around)
+    Some((colors[fill], pixels))
 }
 
 /// How far from the band's median colour, in every channel, an outline's
@@ -1057,6 +1197,82 @@ mod tests {
         assert_eq!(found.ink, Some([33, 134, 235]));
         assert_eq!(found.paper, Some([24; 3]));
         assert_eq!(found.outline.map(|outline| outline.color), Some([250; 3]));
+    }
+
+    /// Thin blue strokes in a white outline, spaced out on brown art, which
+    /// the block's mask covers between the glyphs as well: more of the block
+    /// is brown than blue, and the blue the outline encloses is still the ink.
+    #[test]
+    fn a_thin_fill_enclosed_by_a_lighter_outline_is_the_ink() {
+        let (brown, white, blue) = ([115, 96, 95], [255; 3], [21, 127, 233]);
+        let mut page = RgbImage::from_pixel(160, 340, Rgb(brown));
+        let (x, y, width, height) = (52u32, 40u32, 56u32, 260u32);
+        for top in [40u32, 110, 180, 250] {
+            for (gx, gy) in (60..100).flat_map(|x| (top..top + 40).map(move |y| (x, y))) {
+                let inner = (66..94).contains(&gx) && (top + 6..top + 34).contains(&gy);
+                page.put_pixel(gx, gy, Rgb(if inner { blue } else { white }));
+            }
+        }
+        let lettering = Lettering {
+            kind: super::super::Kind::Text,
+            score: 0.9,
+            bbox: [52.0, 40.0, 108.0, 300.0],
+            mask: Mask {
+                x,
+                y,
+                width,
+                height,
+                pixels: vec![255; (width * height) as usize],
+            },
+            bubble: None,
+            panel: None,
+            room: None,
+        };
+        let found = lettering.typography(&page).expect("ink");
+        assert_eq!(found.ink, Some(blue));
+        assert_eq!(found.outline.map(|outline| outline.color), Some(white));
+    }
+
+    /// Purple strokes in a white outline, itself in a thin black one, on pale
+    /// pink paper: whichever outline the ink split takes, the purple inside
+    /// both is the ink and the white around it the outline.
+    #[test]
+    fn a_fill_inside_two_outlines_is_the_ink() {
+        let (pink, black, white, purple) = ([248, 224, 218], [12; 3], [255; 3], [110, 35, 235]);
+        let mut page = RgbImage::from_pixel(160, 340, Rgb(pink));
+        let (x, y, width, height) = (52u32, 40u32, 56u32, 260u32);
+        for top in [40u32, 110, 180, 250] {
+            for (gx, gy) in (60..100).flat_map(|x| (top..top + 40).map(move |y| (x, y))) {
+                let within = |inset: u32| {
+                    (60 + inset..100 - inset).contains(&gx)
+                        && (top + inset..top + 40 - inset).contains(&gy)
+                };
+                let color = match () {
+                    () if within(10) => purple,
+                    () if within(3) => white,
+                    () => black,
+                };
+                page.put_pixel(gx, gy, Rgb(color));
+            }
+        }
+        let lettering = Lettering {
+            kind: super::super::Kind::Text,
+            score: 0.9,
+            bbox: [52.0, 40.0, 108.0, 300.0],
+            mask: Mask {
+                x,
+                y,
+                width,
+                height,
+                pixels: vec![255; (width * height) as usize],
+            },
+            bubble: None,
+            panel: None,
+            room: None,
+        };
+        let found = lettering.typography(&page).expect("ink");
+        assert_eq!(found.ink, Some(purple));
+        assert_eq!(found.outline.map(|outline| outline.color), Some(white));
     }
 
     /// White glyphs on a dark panel enclose nothing of another colour, and

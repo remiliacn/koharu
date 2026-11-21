@@ -775,7 +775,7 @@ fn the_marquee_marks_an_area_shift_adds_to_alt_takes_from_and_a_click_drops() {
 }
 
 #[test]
-fn a_click_types_point_text_and_a_drag_box_text_each_added_on_commit() {
+fn a_click_types_point_text_added_on_commit_and_a_drag_adds_an_empty_box() {
     let Some(mut fixture) = unscaled(Vec::new()) else {
         return;
     };
@@ -798,7 +798,16 @@ fn a_click_types_point_text_and_a_drag_box_text_each_added_on_commit() {
         json!([[1.0, 0.0, 30.0], [0.0, 1.0, 40.0]])
     );
 
+    // A drag adds its box at once, empty, for Detect to read the lettering
+    // under it; a click in it types there.
     let effects = gesture(&mut fixture.canvas, (10.0, 10.0), (110.0, 60.0));
+    assert_eq!(apply(&mut fixture, effects), ["add_text"]);
+    let [_, boxed] = layers(&fixture)[..] else {
+        panic!("two layers");
+    };
+    assert_eq!(fixture.canvas.selection(), [boxed]);
+    assert_eq!(layer(&fixture, boxed)["content"], json!([]));
+    let effects = gesture(&mut fixture.canvas, (50.0, 30.0), (50.0, 30.0));
     assert!(apply(&mut fixture, effects).is_empty());
     type_text(&mut fixture.canvas, "Box");
     let effects = press_key(
@@ -807,11 +816,11 @@ fn a_click_types_point_text_and_a_drag_box_text_each_added_on_commit() {
         Code::NumpadEnter,
         Modifiers::default(),
     );
-    assert_eq!(apply(&mut fixture, effects), ["add_text"]);
-    let [_, boxed] = layers(&fixture)[..] else {
-        panic!("two layers");
-    };
-    assert_eq!(fixture.canvas.selection(), [boxed]);
+    assert_eq!(apply(&mut fixture, effects), ["set_text"]);
+    assert_eq!(
+        layer(&fixture, boxed)["content"],
+        json!([{"insert": "Box"}])
+    );
     let value = layer(&fixture, boxed);
     assert_eq!(
         value["frame"]["box"]["bounds"],

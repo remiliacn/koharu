@@ -856,11 +856,10 @@ export type Target =
   /**  Recognition, inpainting, or translation on blocks. */
   | ({ blocks: LayerId[] } & { area?: never; pages?: never })
   /**
-   *  Detection or inpainting alone. Detection reads the area alone and puts
-   *  the blocks it finds there in place of the area's. Inpainting writes a
-   *  new raster layer limited by a layer mask to the area, as Photoshop's
-   *  Generative Fill and Content-Aware Fill write one. Its prompt goes ahead
-   *  of the inpainter section's; LaMa, which takes none, ignores it.
+   *  Inpainting only: a new raster layer limited by a layer mask to the
+   *  area, as Photoshop's Generative Fill and Content-Aware Fill write one.
+   *  Its prompt goes ahead of the inpainter section's; LaMa, which takes
+   *  none, ignores it.
    */
   | ({
       area: {
@@ -1084,8 +1083,6 @@ export const commands = {
   /** Fills the area the marquee and the lasso marked with `model` after `prompt`, or the inpainter's own prompt when there's none, as Photoshop's Generative Fill does with the model its bar shows; `None` while no area is marked. The model is this run's only, in the settings' place. */
   fill: (prompt: string | null, model: Inpainter) =>
     invoke<RunId | null>('fill', { prompt, model }, { headers: headers() }),
-  /** Detects in the area the marquee and the lasso marked alone, for lettering the page's detection missed; the blocks found there take the place of the area's. `None` while no area is marked. */
-  detectArea: () => invoke<RunId | null>('detect_area', {}, { headers: headers() }),
   /** Drops the area the marquee and the lasso marked, as Photoshop's Deselect does. */
   deselect: () => invoke<null>('deselect', {}, { headers: headers() }),
 }

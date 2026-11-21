@@ -1,6 +1,7 @@
 //! Detection: the page's panels, balloons, and blocks in reading order, in
-//! place of the ones there, whoever made them, or an area's blocks in place
-//! of the ones there. A block gets its source's frame, tilt, and direction,
+//! place of the ones there, whoever made them, or, while the page has empty
+//! text boxes drawn with the Type tool, a block in each in place of the
+//! ones there. A block gets its source's frame, tilt, and direction,
 //! and its mask. A locked block stays, and so does a translated one, which
 //! holds the user's work: the fork keeps it where the old version reset it,
 //! in the new balloon or panel holding it, and lettering it holds isn't
@@ -12,19 +13,17 @@ mod model;
 mod outline;
 mod tree;
 
-use std::sync::Arc;
-
-use image::RgbImage;
+use image::{DynamicImage, RgbImage};
 use koharu_ml::koharu_layout_highres::{Layout, Options, Typography};
-use koharu_scene::{Content, Layer, LayerId, Op, PageId, Ref};
+use koharu_scene::{Content, Layer, LayerId, Op, PageId, Rect, Ref};
 use kurbo::Point;
 use rayon::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use self::layers::Found;
 pub use self::model::Detector;
-use super::{AreaWork, Task, key};
-use crate::{PipelineConfig, Stage};
+use super::{Task, key};
+use crate::{Area, PipelineConfig, Stage};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -57,11 +56,7 @@ fn threshold<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f32>, 
     }
 }
 
-pub(crate) async fn detect(
-    task: &Task,
-    config: &PipelineConfig,
-    area: Option<Arc<AreaWork>>,
-) -> anyhow::Result<()> {
+pub(crate) async fn detect(task: &Task, config: &PipelineConfig) -> anyhow::Result<()> {
     let member = &task.members[0];
     let read = member.clone();
     let scan = tokio::task::spawn_blocking(move || {
@@ -70,16 +65,20 @@ pub(crate) async fn detect(
         read.scan()
     })
     .await??;
-    let Some((_, scan)) = scan else {
+    let Some((project, scan)) = scan else {
         return Ok(());
     };
-    let crop = match &area {
-        Some(work) => match area::crop(&work.area, scan.width(), scan.height()) {
-            Some(crop) => Some(crop),
-            None => return Ok(()),
-        },
-        None => None,
-    };
+    let page = member.page;
+    // Each drawn box, with what the detector reads of it.
+    let drawn: Vec<(LayerId, Area, Rect, DynamicImage, [u32; 2])> =
+        area::drawn(&project, page, scan.width(), scan.height())
+            .into_iter()
+            .filter_map(|(text, area)| {
+                let crop = area::crop(&area, scan.width(), scan.height())?;
+                let (canvas, at) = area::canvas(&scan, crop);
+                Some((text, area, crop, canvas, at))
+            })
+            .collect();
     let key = key(Stage::Detect, config).expect("a detector is Koharu's");
     let config = config.detector;
     let options = Options {
@@ -88,55 +87,68 @@ pub(crate) async fn detect(
         bubble: config.bubble,
         panel: config.panel,
     };
-    let read = crop.map(|crop| area::canvas(&scan, crop));
-    let (scan, read, detected) = task
+    let (scan, drawn, detected) = task
         .inference(&[member], move |models| {
             let detector = models.get(&key, |device| model::load(config.model, device))?;
-            let image = read.as_ref().map_or(&scan, |(canvas, _)| canvas);
-            let detected = detector.inference(image, &options)?;
-            Ok((scan, read, detected))
+            let detected = match drawn.is_empty() {
+                true => vec![detector.inference(&scan, &options)?],
+                false => drawn
+                    .iter()
+                    .map(|(.., canvas, _)| detector.inference(canvas, &options))
+                    .collect::<anyhow::Result<_>>()?,
+            };
+            Ok((scan, drawn, detected))
         })
         .await?;
-    let page = member.page;
     let name = config.model.to_string();
     let found = tokio::task::spawn_blocking(move || -> anyhow::Result<Outcome> {
         let pixels = scan.to_rgb8();
-        let layout = {
-            let _span = tracing::info_span!("layout").entered();
-            match (read, crop, &area) {
-                (Some((canvas, at)), Some(crop), Some(work)) => area::within(
-                    detected.layout(&canvas.to_rgb8()),
-                    crop,
-                    at,
-                    &work.area,
-                    pixels.width(),
-                    pixels.height(),
-                ),
-                _ => detected.layout(&pixels),
+        let (width, height) = pixels.dimensions();
+        let _span = tracing::info_span!("layout").entered();
+        if drawn.is_empty() {
+            let layout = detected
+                .into_iter()
+                .next()
+                .expect("a page is read once")
+                .layout(&pixels);
+            let typography = measured(&layout, &pixels);
+            return Ok(Outcome::Page {
+                layout,
+                typography,
+                pixels,
+                name,
+            });
+        }
+        let mut boxes = Vec::new();
+        let mut lettering = Vec::new();
+        for ((text, area, crop, canvas, at), detected) in drawn.into_iter().zip(detected) {
+            let found = area::within(
+                detected.layout(&canvas.to_rgb8()),
+                crop,
+                at,
+                &area,
+                width,
+                height,
+            );
+            if let Some(merged) = area::merged(found.lettering, area.rect) {
+                boxes.push((text, area));
+                lettering.push(merged);
             }
+        }
+        let layout = Layout {
+            width,
+            height,
+            lettering,
+            bubbles: Vec::new(),
+            panels: Vec::new(),
         };
-        let typography: Vec<Option<Typography>> = {
-            let _span = tracing::info_span!("typography").entered();
-            layout
-                .lettering
-                .par_iter()
-                .map(|lettering| lettering.typography(&pixels))
-                .collect()
-        };
-        Ok(match area {
-            None => Outcome::Page {
-                layout,
-                typography,
-                pixels,
-                name,
-            },
-            Some(work) => Outcome::Area {
-                layout,
-                typography,
-                pixels,
-                work,
-                name,
-            },
+        let typography = measured(&layout, &pixels);
+        Ok(Outcome::Boxes {
+            boxes,
+            layout,
+            typography,
+            pixels,
+            name,
         })
     })
     .await??;
@@ -145,7 +157,6 @@ pub(crate) async fn detect(
             let Ok(at) = project.page(page) else {
                 return Ok(Vec::new());
             };
-            let mut ops = Vec::new();
             match found {
                 Outcome::Page {
                     layout,
@@ -158,38 +169,39 @@ pub(crate) async fn detect(
                         typography: &typography,
                         pixels: &pixels,
                     };
-                    ops.extend(redetected(&at.layers, &found, page, &name)?);
+                    redetected(&at.layers, &found, page, &name)
                 }
-                // Where an area's blocks go depends on the layers there now.
-                Outcome::Area {
+                Outcome::Boxes {
+                    boxes,
                     layout,
                     typography,
                     pixels,
-                    work,
                     name,
                 } => {
-                    let boxes: Vec<[f32; 4]> = layout
-                        .lettering
-                        .iter()
-                        .map(|lettering| lettering.bbox)
-                        .collect();
-                    let (removed, places, kept) = area::changes(&at.layers, &work.area, &boxes);
                     let found = Found {
                         layout: &layout,
                         typography: &typography,
                         pixels: &pixels,
                     };
-                    ops.extend(removed);
-                    ops.extend(layers::placed(&found, page, &name, &places, &kept)?);
+                    area::adopted(&at.layers, &found, &boxes, page, &name)
                 }
             }
-            Ok(ops)
         })
         .await
 }
 
-/// What a detection found on a page or in an area, which is placed once the
-/// page's layers are known.
+/// Each lettering's typography on the page.
+fn measured(layout: &Layout, pixels: &RgbImage) -> Vec<Option<Typography>> {
+    let _span = tracing::info_span!("typography").entered();
+    layout
+        .lettering
+        .par_iter()
+        .map(|lettering| lettering.typography(pixels))
+        .collect()
+}
+
+/// What a detection found on a page or in its drawn boxes, which is placed
+/// once the page's layers are known.
 enum Outcome {
     Page {
         layout: Layout,
@@ -197,11 +209,12 @@ enum Outcome {
         pixels: RgbImage,
         name: String,
     },
-    Area {
+    /// Each box that held lettering, and that lettering, in the same order.
+    Boxes {
+        boxes: Vec<(LayerId, Area)>,
         layout: Layout,
         typography: Vec<Option<Typography>>,
         pixels: RgbImage,
-        work: Arc<AreaWork>,
         name: String,
     },
 }

@@ -190,8 +190,7 @@ impl Task {
     }
 }
 
-/// A painted area to detect in or to inpaint, and its own prompt, which only
-/// inpainting reads.
+/// A painted area to inpaint, and its own prompt.
 pub(crate) struct AreaWork {
     pub(crate) area: Area,
     pub(crate) prompt: Option<String>,
@@ -210,7 +209,7 @@ pub(crate) async fn run(task: Task, inputs: Inputs) -> Result<(), String> {
     let stage = task.stage;
     let config = &inputs.config;
     let result = match stage {
-        Stage::Detect => detect::detect(&task, config, inputs.area).await,
+        Stage::Detect => detect::detect(&task, config).await,
         Stage::Recognize => recognize::recognize(&task, config).await,
         Stage::Inpaint => inpaint::inpaint(&task, config, inputs.area).await,
         Stage::Translate => {

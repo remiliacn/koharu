@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -27,6 +27,19 @@ describe('canvas color sampling', () => {
     await user.click(screen.getByRole('button', { name: 'Complete sample' }))
     expect(onChange).toHaveBeenCalledWith('#123456')
     expect(useKoharuStore.getState().tool).toBe('text')
+  })
+
+  it('closes the palette once a colour is picked on the canvas', async () => {
+    const user = userEvent.setup()
+    render(<ColorWell value='#111111' onChange={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: 'Brush color' }))
+    expect(screen.getByRole('textbox', { name: 'Hex color code' })).toBeInTheDocument()
+    act(() => useKoharuStore.setState({ picked: { color: '#123456', serial: 1 } }))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('textbox', { name: 'Hex color code' })).not.toBeInTheDocument(),
+    )
   })
 
   it('commits shorthand white as a full RGB color', async () => {

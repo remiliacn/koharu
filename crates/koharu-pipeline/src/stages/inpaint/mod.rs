@@ -15,7 +15,7 @@ mod tone;
 mod windows;
 mod write;
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use anyhow::Result;
 use image::{GrayImage, RgbImage};
@@ -136,6 +136,14 @@ pub(crate) async fn inpaint(
             // What the fill tiers rebuilt all of needs no model.
             if work.regions.is_empty() {
                 return Ok(work);
+            }
+            // stable-diffusion.cpp fits its work to the memory free, which the
+            // detector, OCR and LaMa, loaded beside it, hold: on a 10 GB RTX
+            // 3080, FLUX.3 Klein's edit of a 624x1184 window needed 2.0 GB
+            // and found 1.9 GB. They load again when next asked. A fork
+            // addition; upstream unloads nothing to make room.
+            if model.diffusion() {
+                models.retain(&HashSet::from([key.clone()]));
             }
             let inpainter = models.get(&key, |device| model::load(model, device))?;
             // Stop ends the redraw under way as well as the windows after it.

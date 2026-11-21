@@ -44,28 +44,6 @@ pub async fn fill(
     )?))
 }
 
-/// Detects in the area the marquee and the lasso marked alone, for lettering
-/// the page's detection missed; the blocks found there take the place of the
-/// area's. `None` while no area is marked.
-#[tauri::command]
-#[specta::specta]
-pub async fn detect_area(app: State<'_, Arc<App>>) -> Result<Option<RunId>> {
-    tracing::info!("detect_area");
-    let Some((page, rect, pixels)) = app.screen.area().await.ok().flatten() else {
-        return Ok(None);
-    };
-    let target = Target::Area {
-        page,
-        area: Area { rect, pixels },
-        prompt: None,
-    };
-    Ok(Some(app.process(
-        target,
-        BTreeSet::from([Stage::Detect]),
-        None,
-    )?))
-}
-
 /// Stops every run, running and queued; what they finished stays.
 #[tauri::command]
 #[specta::specta]
